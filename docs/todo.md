@@ -7,10 +7,11 @@
 - **UI**: Terminal-style interface with dynamic content generation, export, backup/restore.
 - **Modes**:
     - `spiral.exe` (Recursive self-improvement dialogue)
-    - `hypersition-chat.exe` (Memetic constructs dialogue)
+    - `hyperstition-chat.exe` (Memetic constructs dialogue)
     - `semantic_escape.exe` (Linguistic deconstruction dialogue)
     - `universe-sim.exe` (Narrative universe simulation)
     - `chess-sim.exe` (AI vs AI chess game with CoT display)
+    - `corruption.exe` (Cognitive reshaping AI dialogue)
     - `noospheric-conquest.exe` (Strategic map-based AI conflict)
 - **Key Technologies**: React, TypeScript, TailwindCSS, esbuild (implied by esm.sh imports), Google GenAI SDK.
 - **API Key Management**: Must be via `process.env.API_KEY`.
@@ -32,34 +33,35 @@
 - [X] Export chat to TXT and MD.
 - [X] Backup and restore conversation (.JSON).
 - [X] Multiple themes (Terminal, Cyanotype, Redzone, CyberpunkYellow, NoosphericDark) & theme switching.
-- [X] `spiral.exe`, `hypersition-chat.exe`, `semantic_escape.exe`, `universe-sim.exe` modes implemented.
+- [X] `spiral.exe`, `hyperstition-chat.exe`, `semantic_escape.exe`, `universe-sim.exe`, `corruption.exe` modes implemented.
 - [X] Error handling for API key and AI initialization (initial versions, improved over time).
 - [X] FPS display & Command history for user inputs.
 - [X] Initial Chess Mode (`chess-sim.exe`) Setup:
     - [X] Basic chess logic (FEN parsing, UCI move application - initial version).
     - [X] Chess board display component.
     - [X] Chain of Thought (CoT) display components.
-    - [X] AI personas for chess (GEM-Q White, AXIOM Black).
+    - [X] AI personas for chess (GEM-Q White, AXIOM Black) with enhanced system prompts.
     - [X] Game loop for AI turns in chess (initial version).
     - [X] Backup/restore for basic chess game state.
     - [X] API Key error display as top banner.
     - [X] Chess Mode "Start Game" button and internal loading UI.
     - [X] Refined initial startup flow: `ControlsPanel` is now consistently visible with the Y/N prompt, allowing mode selection before simulation start.
-- [X] Info Modal for displaying mode-specific information.
+- [X] Info Modal for displaying mode-specific information (`InfoModal.tsx`, `MODE_INFO_CONTENT` in `constants.ts`).
 - [X] Initial Noospheric Conquest Mode Setup:
     - [X] Core game state management (`NoosphericGameState`, `NoosphericNodeData`, etc.).
     - [X] Map data definition and loading for multiple maps ("Global Conflict", "Twin Peaks", "Classic Lattice", "Fractured Core").
     - [X] Visual map display (`NoosphericMapDisplay.tsx`) rendering nodes and connections.
     - [X] Sidebar (`NoosphericSidebar.tsx`) for displaying game status, faction stats, and node details.
     - [X] Basic game loop (turn/phase progression: FLUCTUATION, RESOURCE, MANEUVER, COMBAT).
-    - [X] AI integration for MANEUVER and COMBAT phases, parsing JSON actions.
-    - [X] Implementation of core actions: DEPLOY_UNITS, MOVE_UNITS, ATTACK_NODE.
+    - [X] AI integration for MANEUVER and COMBAT phases, parsing JSON actions from enhanced system prompts.
+    - [X] Implementation of core actions: DEPLOY_UNITS, MOVE_UNITS, ATTACK_NODE, ACTIVATE_FABRICATION_HUB, EVOLVE_UNITS.
     - [X] Basic combat resolution (dice rolls, unit losses).
-    - [X] Basic win condition checking (Annihilation, Max Turns).
-    - [X] Backup/restore for Noospheric Conquest game state.
-    - [X] Fabrication Hubs and Evolved Units mechanics (activation, evolution, combat bonus).
-    - [X] Refined AI system prompts for Noospheric Conquest to improve action validity.
+    - [X] Basic win condition checking (Annihilation, Max Turns, KJ Control).
+    - [X] Backup/restore for Noospheric Conquest game state, including map type.
+    - [X] Fabrication Hubs and Evolved Units mechanics (activation, evolution, costs, combat bonus).
+    - [X] Refined AI system prompts for Noospheric Conquest to improve action validity and awareness of new mechanics and costs.
     - [X] Connectivity (Supply Line) logic for QR generation, Hubs, and KJ victory.
+    - [X] Costs for deployment, hub activation, and unit evolution defined in `constants.ts` and integrated into prompts/rules.
 
 ## Phase 2: Chess & Noospheric Conquest Enhancements & UI Refinements (Largely Completed, Robustness Ongoing)
 - [X] **Chess Mode UI & Core Gameplay Features**:
@@ -79,18 +81,19 @@
     - [X] AI phase success/failure counters in the sidebar.
     - [X] Inline tactical analysis history viewer within each faction's analysis box in the sidebar.
     - [X] Total game time displayed in the sidebar upon game completion.
+    - [X] Display of AI turn duration and average turn duration in the sidebar.
+    - [X] Battle Report Modal displaying detailed combat outcomes including dice rolls.
 - [X] **AI Move Parsing & Validity Robustness (Chess - Iterative Improvements)**:
-    - [X] System prompts repeatedly updated for strict UCI format, forbidding algebraic notation.
+    - [X] System prompts repeatedly updated for strict UCI format, forbidding algebraic notation. Latest prompts emphasize FEN as absolute truth and mandatory pre-move piece identification.
     - [X] `isMoveValid` in `utils/chessLogic.ts` enhanced for basic pawn promotion validation, recognition of castling UCI, and explicit check for 'from' and 'to' being identical.
-    - [X] Lenient parsing in `ChessModeContainer` to correct algebraic capture notation (e.g., `d5xc6` to `d5c6`).
-    - [X] System prompts refined to emphasize FEN as the SOLE source of truth and for piece identification (e.g., post-castling). Added explicit FEN interpretation examples.
+    - [X] System prompts refined to emphasize FEN as the SOLE source of truth and for piece identification (e.g., post-castling). Added explicit FEN interpretation examples. This has shown significant success.
     - [X] Basic castling logic implemented:
         - [X] `applyMoveToBoard` moves King & Rook for castling.
         - [X] FEN castling rights updated in `ChessModeContainer`.
     - [X] Implemented retry logic for AI moves (`MAX_CHESS_RETRY_ATTEMPTS`).
 - **Ongoing / Needs Monitoring (Chess & Noospheric AI Robustness)**:
-    - [ ] Continuously monitor AI chess move validity. AI hallucinations regarding piece identity on source squares (e.g., mistaking King for Rook after castling), or attempts to move from empty/illegal squares remain occasional issues despite extensive prompt engineering and retry logic.
-    - [ ] Continuously monitor Noospheric Conquest AI action validity (e.g., trying to move units before deploying, evolving units at inactive hubs, moving to full nodes). Retry logic and prompt refinement are in place but may need further tuning.
+    - [ ] Continuously monitor AI chess move validity. AI hallucinations regarding piece identity on source squares (e.g., mistaking King for Rook after castling), or attempts to move from empty/illegal squares remain occasional issues despite extensive prompt engineering and retry logic. *Status: Significantly improved with latest prompt enhancements.*
+    - [ ] Continuously monitor Noospheric Conquest AI action validity (e.g., trying to move units before deploying, evolving units at inactive hubs, moving to full nodes, miscalculating QR for sequential actions). Retry logic and prompt refinement are in place but may need further tuning for complex sequential actions.
     - [ ] Current primary strategy: Iterative prompt refinement with highly specific examples and constraints.
     - [ ] Client-side validation is catching illegalities, but the goal is to reduce AI errors at the source.
 
@@ -116,7 +119,7 @@
     - [ ] Flip board perspective based on human player's color.
 - [ ] **Noospheric Conquest Enhancements**:
     - [ ] **Enhanced Game Review/Replay**:
-        - [ ] Consider a larger modal or dedicated view for the tactical analysis history.
+        - [ ] Consider a larger modal or dedicated view for the tactical analysis history for improved readability.
         - [ ] Future: Implement a turn-by-turn "replay" feature, allowing users to step through a completed or loaded game, visualizing map changes and reviewing AI tactical analyses for each turn/phase. This would leverage the stored `tacticalAnalysisHistory` and potentially snapshots of game states.
     - [ ] More diverse Fluctuation Events.
     - [ ] More sophisticated scoring for Score Victory.
@@ -138,10 +141,11 @@
 
 ## Notes & Key Information
 - **API Key (`process.env.API_KEY`)**: Critical. Handled externally.
-- **Gemini Model**: `gemini-2.5-flash-preview-04-17` (current).
+- **Gemini Model**: `gemini-2.5-flash-preview-04-17` (current standard). Pro model `gemini-2.5-pro-preview-05-06` is defined but not yet used by default.
 - **UI Aesthetics**: Maintain immersive "terminal" / "simulation" feel.
 - **Backup Version**: Currently `1.5.0`. Update if `ConversationBackup` structure changes.
 - **Chess Strategies**: Defined in `constants.ts`.
 - **Chess Game Archive**: Uses `gameHistoryArchive` in `ChessModeContainer` storing `ChessGameRecord[]`.
 - **Chess AI Retry**: `MAX_CHESS_RETRY_ATTEMPTS` (currently 2).
 - **Noospheric AI Retry**: `MAX_NOOSPHERIC_RETRY_ATTEMPTS` (currently 2).
+- **Noospheric Game Constants**: `FAB_HUB_ACTIVATION_COST`, `FAB_HUB_GARRISON_MIN`, `EVOLVE_UNIT_COST`, `DEPLOY_STANDARD_UNIT_COST` are defined in `constants.ts`.

@@ -1,3 +1,4 @@
+
 # OVERMIND UI - Issue Tracking & Resolution Log
 
 This document tracks significant issues encountered during the development of the OVERMIND UI, the steps taken to diagnose them, and the solutions implemented.
@@ -17,14 +18,14 @@ This document tracks significant issues encountered during the development of th
     - Displayed a persistent top banner error if API key is missing, allowing the rest of the UI to attempt rendering.
 - **`initializeAI` Function Refinement (`App.tsx`):**
     - Added more granular logging to trace success/failure of `genAI.current.chats.create()` for each persona.
-    - Implemented an `initializationError` state to capture and display specific failures from `initializeAI` in the UI, particularly for Chess Mode.
+    - Implemented an `initializationError` state to capture and display specific failures from `initializeAI` in the UI, particularly for Chess and Noospheric Conquest Modes.
     - Ensured `Chat` instances are correctly created with appropriate system prompts and history context based on the current `AppMode` and whether a backup is being loaded.
-- **Chess Mode Specific Initialization (`App.tsx`, `ChessModeContainer.tsx`):**
-    - Made `ChessModeContainer` rendering conditional on AI chat instances (`ai1ChatRef`, `ai2ChatRef`) being successfully initialized and passed as props (`isAiReadyForChess` state in `App.tsx`).
-    - `ChessModeContainer` now displays its own loading/error messages based on props from `App.tsx` rather than `App.tsx` showing a full-screen block.
-    - Added `chessResetTokenRef` to help ensure `ChessModeContainer` remounts and reinitializes correctly when switching to/loading chess games.
+- **Game Mode Specific Initialization (`App.tsx`, `ChessModeContainer.tsx`, `NoosphericConquestContainer.tsx`):**
+    - Made game mode container rendering conditional on AI chat instances (`ai1ChatRef`, `ai2ChatRef`) being successfully initialized and passed as props (`isAiReadyForChess`, `isAiReadyForNoospheric` states in `App.tsx`).
+    - Game mode containers now display their own loading/error messages based on props from `App.tsx` rather than `App.tsx` showing a full-screen block.
+    - Added `chessResetTokenRef` and `noosphericResetTokenRef` to help ensure game containers remount and reinitialize correctly.
 - **Mode Switching Logic (`App.tsx`):**
-    - `resetAndInitializeForNewMode` function overhauled to cleanly reset all relevant states (conversation history, turn counts, AI chat refs, chess-specific states) before calling `initializeAI` for the new mode.
+    - `resetAndInitializeForNewMode` function overhauled to cleanly reset all relevant states (conversation history, turn counts, AI chat refs, game-specific states) before calling `initializeAI` for the new mode.
 - **Status**: Largely resolved. Robust error display and graceful handling of initialization failures are key.
 
 ## 2. AI Chess Move Formatting & Validity Errors
@@ -51,38 +52,36 @@ This has been an iterative process, primarily involving prompt engineering and c
     *   *Outcome:* Caught specific malformed promotion attempts.
 4.  **Lenient Parsing for Algebraic Captures (`ChessModeContainer.tsx`):**
     *   Observed AIs frequently using "x" for captures (e.g., "d5xc6").
-    *   Added a secondary regex `MOVE:\s*([a-h][1-8])x([a-h][1-8])\s*` to `makeAIMove`.
+    *   Added a secondary regex `MOVE:\s*([a-h][1-8])x([a-h][1-8])([qrbn]?)\s*` to `makeAIMove`.
     *   If the primary UCI regex fails, this secondary regex attempts to parse the algebraic capture and converts it to UCI (e.g., "d5xc6" -> "d5c6"). A warning is logged.
-    *   *Outcome:* Significantly improved game continuation by salvaging these common "slightly off" moves.
-5.  **FEN as Sole Source of Truth (Prompt Engineering):**
-    *   System prompts heavily re-emphasized: "**IMPORTANT: The board state is ALWAYS provided to you in Forsyth-Edwards Notation (FEN). This FEN string is the SOLE SOURCE OF TRUTH for the current piece positions. Base your move analysis ONLY on this FEN.**"
-    *   Warned that moves invalid based on FEN will be rejected.
-    *   *Outcome:* Helped, but AI "hallucinations" about piece positions still occurred.
+    *   *Outcome:* Significantly improved game continuation by salvaging these common "slightly off" moves. This leniency has since been removed in favor of stricter prompt enforcement.
+5.  **FEN as Sole Source of Truth & Mandatory Pre-Move Piece ID (Prompt Engineering - Current Iteration):**
+    *   System prompts for Chess AIs (`CHESS_AI1_SYSTEM_PROMPT`, `CHESS_AI2_SYSTEM_PROMPT` in `constants.ts`) were significantly enhanced:
+        *   Emphasized: "**FEN IS ABSOLUTE TRUTH:** The board state is ALWAYS provided to you in Forsyth-Edwards Notation (FEN). This FEN string is the SOLE and ABSOLUTE SOURCE OF TRUTH for current piece positions. ALL your analysis and move decisions MUST derive from this FEN."
+        *   Added: "**MANDATORY PRE-MOVE PIECE IDENTIFICATION:** Before outputting your UCI move, you MUST internally verify and confirm the exact piece (type and color) located on your intended 'from' square by meticulously parsing the provided FEN string. Verbally state this piece to yourself (e.g., "The FEN shows a White King on e1"). Do NOT assume a piece's identity or location based on its typical starting position or previous moves if the FEN indicates otherwise (e.g., after castling, the King is on g1, not e1; a Rook might be on f1, not h1). Misidentification based on assumptions rather than the current FEN will lead to illegal moves."
+        *   Reiterated strict UCI format for standard moves, promotions, and castling (using King's UCI move, not "O-O").
+        *   Explicitly stated: "INVALID MOVES WILL BE REJECTED."
+    *   *Outcome:* This detailed instruction set has shown significant improvement in AI adherence to FEN and UCI rules, reducing piece misidentification and illegal move attempts. Logs confirm better board understanding.
 6.  **Basic Castling Logic Implementation (`utils/chessLogic.ts`, `ChessModeContainer.tsx`):**
     *   AI was attempting castling moves (e.g., "e1g1") which `isMoveValid` (basic) initially rejected as an invalid King move pattern.
     *   `isMoveValid` updated to recognize UCI castling strings for a King as *potentially* valid at a basic level.
     *   `applyMoveToBoard` updated to correctly move both the King and the Rook during castling.
     *   `makeAIMove` in `ChessModeContainer` updated to correctly modify FEN castling rights after King/Rook moves or Rook captures.
-    *   *Outcome:* Enabled castling moves, but revealed deeper AI state tracking issues.
-7.  **Addressing AI Piece Misidentification (Post-Castling Hallucination - Prompt Engineering - Ongoing):**
-    *   Symptom: AI (e.g., GEM-Q as White) after castling kingside (King on g1, Rook on f1) would try to move "Rook from g1" (`g1f1`), which is an illegal move as g1 contains the King and f1 its own Rook.
-    *   System prompts updated with: "**CRUCIAL PIECE IDENTIFICATION: Before generating your UCI move, internally verify the type and color of the piece on your intended 'from' square using ONLY the provided FEN string. For example, if the FEN ... shows '...R...RFK', the piece on g1 is 'K' (King), and the piece on f1 is 'R' (Rook).**"
-    *   Added more explicit examples of FEN interpretation for piece ID in prompts (latest attempts).
-    *   *Outcome:* This remains an **ongoing challenge**. While helpful, the AI can still occasionally misinterpret the FEN for specific piece locations, especially in complex or unusual board states or if its internal state tracking diverges. The client-side `isMoveValid` correctly catches the *illegality* of the proposed move (e.g., "Cannot capture own piece at target f1"), but the root cause is AI misinterpretation.
-8.  **Invalid Source Square Moves (e.g., "d7d6" when d7 is empty - Prompt Engineering - Ongoing):**
+    *   *Outcome:* Enabled castling moves, further highlighting the need for robust FEN interpretation by the AI.
+7.  **Invalid Source Square Moves (e.g., "d7d6" when d7 is empty - Addressed by Enhanced Prompts):**
     *   Symptom: AI attempts to move a piece from an empty square.
-    *   Prompt Refinement: Further emphasis on FEN as the sole source of truth for piece presence. Added specific instruction: *"Before generating your UCI move, internally verify the type and color of the piece on your intended 'from' square using ONLY the provided FEN string."*
+    *   Prompt Refinement: Solved primarily by the "FEN IS ABSOLUTE TRUTH" and "MANDATORY PRE-MOVE PIECE IDENTIFICATION" sections in the prompts.
     *   Client-side `isMoveValid`: Catches this by checking if `board[from.row][from.col]` is null.
-    *   *Outcome:* Client-side validation prevents illegal moves, but the AI's error indicates a persistent misreading of the FEN.
-9.  **Invalid Move "from" and "to" are Same Square (e.g., e5e5):**
+    *   *Outcome:* Client-side validation prevents illegal moves. AI errors of this type significantly reduced by prompt changes.
+8.  **Invalid Move "from" and "to" are Same Square (e.g., e5e5):**
     *   Symptom: AI attempts to move a piece to its own square.
     *   Solution: Added an explicit check in `isMoveValid` in `utils/chessLogic.ts` to disallow such moves.
-    *   *Outcome:* Client correctly identifies this specific error. AI generation of such moves still points to deeper issues.
-10. **Retry Logic for AI Moves (`ChessModeContainer.tsx`):**
-    *   Implemented a retry loop in `makeAIMove` allowing the AI up to `MAX_CHESS_RETRY_ATTEMPTS` (currently 2) to provide a valid move if its initial attempt fails parsing or `isMoveValid`.
+    *   *Outcome:* Client correctly identifies this specific error.
+9.  **Retry Logic for AI Moves (`ChessModeContainer.tsx`, `NoosphericConquestContainer.tsx`):**
+    *   Implemented a retry loop in `makeAIMove` (and equivalent for Noospheric) allowing the AI up to `MAX_CHESS_RETRY_ATTEMPTS` / `MAX_NOOSPHERIC_RETRY_ATTEMPTS` to provide a valid move/action if its initial attempt fails parsing or validation.
     *   The AI is re-prompted with information about its previous error.
     *   *Outcome:* Significantly improves game continuity by allowing the AI to self-correct on formatting or basic rule violations, reducing premature game ends.
-- **Status**: Iteratively improved. Client-side validation is robust for basic errors. AI's adherence to complex rules and FEN interpretation remains the primary area for ongoing prompt engineering. Retry logic helps mitigate some AI errors.
+- **Status**: Iteratively improved. The latest prompt enhancements for Chess AI focusing on FEN as absolute truth and mandatory pre-move piece ID have been very effective. Client-side validation and retry logic serve as robust fallbacks. AI's FEN interpretation in highly complex states remains an area for monitoring.
 
 ## 3. Chess Mode Startup Flow & Initial UI Presentation
 
@@ -95,7 +94,7 @@ This has been an iterative process, primarily involving prompt engineering and c
     - The `renderAppContent` function now *always* returns a structure that includes both the `TerminalWindow` (for the Y/N prompt) and the `ControlsPanel`.
     - The `TerminalWindow` is displayed in the main content area, and the `ControlsPanel` is visible alongside it.
 - This ensures the user can see the selected mode, interact with the `ControlsPanel` to change it if desired, and then respond "Y" or "N" within the full UI context.
-- The `ChessModeContainer` only takes over the full view if `currentMode` is `CHESS_SIM_EXE` *and* `isAwaitingInitialStart` is `false`.
+- The game mode specific containers (Chess, Noospheric) only take over the full view if `currentMode` is set appropriately *and* `isAwaitingInitialStart` is `false`.
 - **Status**: Resolved.
 
 ## 4. UI Layout & Overlap Issues (Chess Mode)
@@ -109,28 +108,7 @@ This has been an iterative process, primarily involving prompt engineering and c
     - Move History and Game History Archive panels given fixed `max-h` (max-height) values and `overflow-y-auto` to enable internal scrolling.
 - **Status**: Resolved.
 
-## 5. Missing `CHESS_STRATEGIES` Constant
-
-### Symptom:
-- JavaScript runtime error: `CHESS_STRATEGIES` not defined/imported in `ChessModeContainer.tsx`.
-
-### Solution:
-- Defined and exported the `CHESS_STRATEGIES` array in `constants.ts`.
-- Ensured `ChessModeContainer.tsx` correctly imports this constant.
-- **Status**: Resolved.
-
-## 6. TypeScript Errors in `App.tsx` (Early Development)
-
-### Symptoms:
-- TypeScript compilation error due to a redundant type comparison in a `useEffect` hook.
-- TypeScript compilation error: "Cannot find name 'ControlsPanel'".
-
-### Solutions:
-- Removed the redundant type comparison.
-- Added `import ControlsPanel from './components/ControlsPanel';`.
-- **Status**: Resolved.
-
-## 7. Persona/Color Mix-up in `spiral.exe` Mode
+## 5. Persona/Color Mix-up in `spiral.exe` Mode
 
 ### Symptom:
 - In `spiral.exe` mode, AI personas were textually mixed up (GEM-Q speaking as AXIOM, or vice-versa), and AXIOM's messages were sometimes displayed in GEM-Q's color.
@@ -142,25 +120,20 @@ This has been an iterative process, primarily involving prompt engineering and c
     - `SPIRAL_EXE_MODE_START_MESSAGES` in `constants.ts` updated to prompt AXIOM.
     - In `resetAndInitializeForNewMode` (`App.tsx`), `nextAiToSpeakRef.current` is set to `'AI2'` when `spiral.exe` is started fresh.
     - `handleAiTurn` logic adjusted for AXIOM's first turn to correctly process the Facilitator's message.
-- **Status**: Resolved. The persona and color misattributions in `spiral.exe` appear to be fixed.
-
-## 8. Terminal Window Sizing in Non-Chess Modes
-
-### Symptom:
-- The terminal window (chat interface) in modes other than chess was too narrow by default and only expanded once text filled in.
-
-### Solution (`App.tsx`):
-- The `main` HTML element wrapping the `TerminalWindow` was given `flex-grow` to allow it to expand.
-- The `className` prop for `TerminalWindow` was updated to include `w-full` to ensure it fills its parent.
 - **Status**: Resolved.
 
-## 9. `spiral.exe` Mode Not Auto-Starting Dialogue
+## 6. Noospheric Conquest AI Action Validity
 
 ### Symptom:
-- Unlike other AI-to-AI modes, `spiral.exe` required a "Send Intervention" action to begin the dialogue after the initial "Y" confirmation.
+- AI might attempt invalid actions like moving more units than available, deploying to non-CN nodes, or trying to use an inactive Fabrication Hub.
 
-### Solution (`App.tsx`, `constants.ts`):
-- `SPIRAL_EXE_MODE_START_MESSAGES` (now prompting AXIOM) ensures a Facilitator message is present.
-- `resetAndInitializeForNewMode` processes these messages.
-- The main AI turn-handling `useEffect` in `App.tsx` is triggered correctly by the Facilitator's message (as `lastRelevantMessage.sender === FACILITATOR_SENDER_NAME`), which then calls `handleAiTurn` for AXIOM.
-- **Status**: Resolved. `spiral.exe` now starts automatically.
+### Solution:
+- **Enhanced AI Prompts (`NOOSPHERIC_CONQUEST_AI1_SYSTEM_PROMPT`, `NOOSPHERIC_CONQUEST_AI2_SYSTEM_PROMPT` in `constants.ts`):**
+    - Prompts now include a detailed "CRITICAL RULES FOR ACTION VALIDITY" section and an "INTERNAL CHECKLIST" for the AI to perform before generating JSON.
+    - Emphasizes sequential action processing (e.g., deploy first, then activate hub, then evolve, then move).
+    - Explicitly details requirements for each action type (`DEPLOY_UNITS`, `MOVE_UNITS`, `ATTACK_NODE`, `ACTIVATE_FABRICATION_HUB`, `EVOLVE_UNITS`), including QR costs, unit availability, node ownership, connectivity, and hub status.
+- **Client-Side Pre-validation (`NoosphericConquestContainer.tsx`):**
+    - Before sending the AI's JSON response to `processAIResponse`, a loop iterates through the actions, performing basic checks (e.g., units > 0, phase validity, simple resource checks, node ownership for deployments/moves). If an invalid action is found, this attempt is marked as failed, and a retry is triggered.
+- **Retry Logic (`NoosphericConquestContainer.tsx`):**
+    - If pre-validation or API call fails, the AI is re-prompted with error information for up to `MAX_NOOSPHERIC_RETRY_ATTEMPTS`.
+- **Status**: Iteratively improved. The detailed prompts and client-side pre-validation significantly reduce blatant errors. AI correctly sequencing complex multi-step actions (like deploying to a CN, then moving those new units, then activating a hub at the destination if conditions are met *after* the move) remains an area of complexity and ongoing monitoring.
