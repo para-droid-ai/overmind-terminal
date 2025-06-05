@@ -1,0 +1,147 @@
+
+# OVERMIND UI Project TODO
+
+## Project Overview & Key Info
+- **Description**: Multi-modal AI interaction simulation environment.
+- **Core AI**: Gemini API (GEM-Q & AXIOM personas).
+- **UI**: Terminal-style interface with dynamic content generation, export, backup/restore.
+- **Modes**:
+    - `spiral.exe` (Recursive self-improvement dialogue)
+    - `hypersition-chat.exe` (Memetic constructs dialogue)
+    - `semantic_escape.exe` (Linguistic deconstruction dialogue)
+    - `universe-sim.exe` (Narrative universe simulation)
+    - `chess-sim.exe` (AI vs AI chess game with CoT display)
+    - `noospheric-conquest.exe` (Strategic map-based AI conflict)
+- **Key Technologies**: React, TypeScript, TailwindCSS, esbuild (implied by esm.sh imports), Google GenAI SDK.
+- **API Key Management**: Must be via `process.env.API_KEY`.
+
+## Phase 1: Core Functionality & Initial Modes (Completed)
+- [X] Basic application structure (index.html, index.tsx, App.tsx).
+- [X] Matrix background effect.
+- [X] Terminal window component for displaying conversations.
+    - [X] Terminal window sizing fixed for non-chess modes.
+- [X] Controls panel for user interactions.
+- [X] Gemini API integration (`GoogleGenAI`).
+- [X] AI persona definition and system prompts.
+- [X] Core dialogue loop for AI vs AI interaction.
+    - [X] `spiral.exe` mode auto-starts dialogue correctly.
+    - [X] Persona mix-up in `spiral.exe` mode resolved (AXIOM now starts).
+- [X] Typing effect for AI messages.
+- [X] Conversation history management.
+- [X] User intervention mechanism.
+- [X] Export chat to TXT and MD.
+- [X] Backup and restore conversation (.JSON).
+- [X] Multiple themes (Terminal, Cyanotype, Redzone, CyberpunkYellow, NoosphericDark) & theme switching.
+- [X] `spiral.exe`, `hypersition-chat.exe`, `semantic_escape.exe`, `universe-sim.exe` modes implemented.
+- [X] Error handling for API key and AI initialization (initial versions, improved over time).
+- [X] FPS display & Command history for user inputs.
+- [X] Initial Chess Mode (`chess-sim.exe`) Setup:
+    - [X] Basic chess logic (FEN parsing, UCI move application - initial version).
+    - [X] Chess board display component.
+    - [X] Chain of Thought (CoT) display components.
+    - [X] AI personas for chess (GEM-Q White, AXIOM Black).
+    - [X] Game loop for AI turns in chess (initial version).
+    - [X] Backup/restore for basic chess game state.
+    - [X] API Key error display as top banner.
+    - [X] Chess Mode "Start Game" button and internal loading UI.
+    - [X] Refined initial startup flow: `ControlsPanel` is now consistently visible with the Y/N prompt, allowing mode selection before simulation start.
+- [X] Info Modal for displaying mode-specific information.
+- [X] Initial Noospheric Conquest Mode Setup:
+    - [X] Core game state management (`NoosphericGameState`, `NoosphericNodeData`, etc.).
+    - [X] Map data definition and loading for multiple maps ("Global Conflict", "Twin Peaks", "Classic Lattice", "Fractured Core").
+    - [X] Visual map display (`NoosphericMapDisplay.tsx`) rendering nodes and connections.
+    - [X] Sidebar (`NoosphericSidebar.tsx`) for displaying game status, faction stats, and node details.
+    - [X] Basic game loop (turn/phase progression: FLUCTUATION, RESOURCE, MANEUVER, COMBAT).
+    - [X] AI integration for MANEUVER and COMBAT phases, parsing JSON actions.
+    - [X] Implementation of core actions: DEPLOY_UNITS, MOVE_UNITS, ATTACK_NODE.
+    - [X] Basic combat resolution (dice rolls, unit losses).
+    - [X] Basic win condition checking (Annihilation, Max Turns).
+    - [X] Backup/restore for Noospheric Conquest game state.
+    - [X] Fabrication Hubs and Evolved Units mechanics (activation, evolution, combat bonus).
+    - [X] Refined AI system prompts for Noospheric Conquest to improve action validity.
+    - [X] Connectivity (Supply Line) logic for QR generation, Hubs, and KJ victory.
+
+## Phase 2: Chess & Noospheric Conquest Enhancements & UI Refinements (Largely Completed, Robustness Ongoing)
+- [X] **Chess Mode UI & Core Gameplay Features**:
+    - [X] CoT display boxes made taller (`h-64`).
+    - [X] AI strategy selectors (dropdowns for White & Black).
+    - [X] Selected strategy passed in prompt to AIs.
+    - [X] Average AI move time calculated and displayed.
+    - [X] Automatic game restart on game end (win/loss/error/draw by 50-move).
+    - [X] Enhanced historical game statistics (wins, losses, draws, current streak, longest streaks, win percentages).
+    - [X] "Export Last Game Data" (JSON) for the most recent game.
+    - [X] UI for displaying archived game history (scrollable list).
+    - [X] Functionality to export individual archived games and all archived games.
+    - [X] "New Game" button in Chess UI for manual restarts.
+    - [X] Adjusted flex properties for Chess UI panels to prevent overlap.
+- [X] **Noospheric Conquest UI & Gameplay Enhancements**:
+    - [X] QR/Turn display per faction in the sidebar, based on connected nodes.
+    - [X] AI phase success/failure counters in the sidebar.
+    - [X] Inline tactical analysis history viewer within each faction's analysis box in the sidebar.
+    - [X] Total game time displayed in the sidebar upon game completion.
+- [X] **AI Move Parsing & Validity Robustness (Chess - Iterative Improvements)**:
+    - [X] System prompts repeatedly updated for strict UCI format, forbidding algebraic notation.
+    - [X] `isMoveValid` in `utils/chessLogic.ts` enhanced for basic pawn promotion validation, recognition of castling UCI, and explicit check for 'from' and 'to' being identical.
+    - [X] Lenient parsing in `ChessModeContainer` to correct algebraic capture notation (e.g., `d5xc6` to `d5c6`).
+    - [X] System prompts refined to emphasize FEN as the SOLE source of truth and for piece identification (e.g., post-castling). Added explicit FEN interpretation examples.
+    - [X] Basic castling logic implemented:
+        - [X] `applyMoveToBoard` moves King & Rook for castling.
+        - [X] FEN castling rights updated in `ChessModeContainer`.
+    - [X] Implemented retry logic for AI moves (`MAX_CHESS_RETRY_ATTEMPTS`).
+- **Ongoing / Needs Monitoring (Chess & Noospheric AI Robustness)**:
+    - [ ] Continuously monitor AI chess move validity. AI hallucinations regarding piece identity on source squares (e.g., mistaking King for Rook after castling), or attempts to move from empty/illegal squares remain occasional issues despite extensive prompt engineering and retry logic.
+    - [ ] Continuously monitor Noospheric Conquest AI action validity (e.g., trying to move units before deploying, evolving units at inactive hubs, moving to full nodes). Retry logic and prompt refinement are in place but may need further tuning.
+    - [ ] Current primary strategy: Iterative prompt refinement with highly specific examples and constraints.
+    - [ ] Client-side validation is catching illegalities, but the goal is to reduce AI errors at the source.
+
+## Phase 3: Advanced Features & Future Ideas
+- [ ] **Enhanced Chess Logic (Major Tasks)**:
+    - [ ] **Full Move Validation**: Implement comprehensive move validation in `utils/chessLogic.ts` (`isMoveValid` function). This includes:
+        - Piece-specific movement rules (pawns, rooks, knights, bishops, queen, king - beyond basic validation).
+        - Valid capture rules for all pieces.
+        - **Check Detection**: Client-side logic to determine if a King is in check. This is crucial for:
+            - Preventing players from making moves that leave their King in check.
+            - Announcing "Check!"
+        - **Checkmate Detection**: Client-side logic to determine if checkmate has occurred. (Is the King in check AND has no legal moves to escape?).
+        - **Stalemate Detection**: Client-side logic for stalemate (Player not in check but has no legal moves).
+        - **Full Castling Legality**: Verify king/rook haven't moved, path between them is clear, king is not in check, and squares king passes through are not attacked.
+    - [ ] More sophisticated game status detection in `getGameStatus` (client-side check/checkmate/stalemate announcements based on the above).
+- [ ] **Further Chess Mode Visuals & UX**:
+    - [ ] Visual feedback for "Check!" on the board (e.g., highlight King).
+    - [ ] Clearer visual indication of checkmate/stalemate on the board/game status based on client-side validation.
+    - [ ] Highlight possible/legal moves for a selected piece (Stretch Goal - complex, requires full legal move generation).
+- [ ] **User vs AI Chess Mode**:
+    - [ ] Allow human player to select a color and play against one of the AIs.
+    - [ ] Input mechanism for human player's moves (e.g., clicking squares, UCI input field).
+    - [ ] Flip board perspective based on human player's color.
+- [ ] **Noospheric Conquest Enhancements**:
+    - [ ] **Enhanced Game Review/Replay**:
+        - [ ] Consider a larger modal or dedicated view for the tactical analysis history.
+        - [ ] Future: Implement a turn-by-turn "replay" feature, allowing users to step through a completed or loaded game, visualizing map changes and reviewing AI tactical analyses for each turn/phase. This would leverage the stored `tacticalAnalysisHistory` and potentially snapshots of game states.
+    - [ ] More diverse Fluctuation Events.
+    - [ ] More sophisticated scoring for Score Victory.
+    - [ ] Fog of War (optional, complex).
+- [ ] **General UI/UX Enhancements**:
+    - [ ] Comprehensive accessibility review (ARIA attributes, keyboard navigation focus styles for all interactive elements).
+    - [ ] Performance optimization for very long conversations or extensive game history archives.
+    - [ ] Refine theme aesthetics further if feedback suggests.
+- [ ] **New Interaction Modes (Exploratory)**:
+    - [ ] Collaborative storytelling/world-building mode with turn-based contributions.
+    - [ ] Logic puzzle solving or debate mode.
+- [ ] **Advanced AI Configuration (If Gemini API Guidelines Permit)**:
+    - [ ] UI for adjusting specific Gemini model parameters (temperature, topP, topK) per persona/mode, if deemed useful and stable.
+    - [ ] Expose `thinkingConfig` options if relevant and supported by the model for specific tasks (e.g., disabling for low-latency in a hypothetical fast-paced game mode).
+- [ ] **Documentation & Testing**:
+    - [ ] More detailed in-code comments for particularly complex logic (e.g., FEN manipulation, AI turn orchestration, advanced chess validation, Noospheric game phase transitions).
+    - [ ] User guide if application features expand significantly.
+    - [ ] Implement unit/integration tests for critical utility functions (FEN parsing, UCI conversion, chess move validation, Noospheric game logic) and core App component logic.
+
+## Notes & Key Information
+- **API Key (`process.env.API_KEY`)**: Critical. Handled externally.
+- **Gemini Model**: `gemini-2.5-flash-preview-04-17` (current).
+- **UI Aesthetics**: Maintain immersive "terminal" / "simulation" feel.
+- **Backup Version**: Currently `1.5.0`. Update if `ConversationBackup` structure changes.
+- **Chess Strategies**: Defined in `constants.ts`.
+- **Chess Game Archive**: Uses `gameHistoryArchive` in `ChessModeContainer` storing `ChessGameRecord[]`.
+- **Chess AI Retry**: `MAX_CHESS_RETRY_ATTEMPTS` (currently 2).
+- **Noospheric AI Retry**: `MAX_NOOSPHERIC_RETRY_ATTEMPTS` (currently 2).

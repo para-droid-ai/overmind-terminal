@@ -1,0 +1,1402 @@
+import React, { useState, useEffect, useCallback, useReducer, useRef } from 'react';
+import { LucideSwords, LucideShield, LucideZap, LucideAtom, LucideDice5, LucideMove, LucidePlusCircle, LucideDollarSign, LucideAlertTriangle, LucideInfo, LucideChevronRight, LucideChevronLeft, LucideTimer, LucideMapPin, LucideTarget, LucideFactory, LucideBox, LucideShuffle, LucideGlobe, LucideMap, LucideX } from 'lucide-react';
+
+// --- Enums and Types (from design document) ---
+enum AppMode {
+  QUANTUM_GAMBIT_EXE = "quantum-gambit.exe", // To be renamed to NOOSPHERIC_CONQUEST_EXE
+  NOOSPHERIC_CONQUEST_EXE = "noospheric_conquest.exe",
+}
+
+enum QuantumUnitType {
+  LOGIC_CORE = 'LC',
+  SHIELDING_NODE_UNIT = 'SN',
+  QUANTUM_ENTANGLER = 'QE',
+}
+
+type PlayerId = 'AI1' | 'AI2';
+
+interface QuantumUnit {
+  id: string;
+  type: QuantumUnitType;
+  owner: PlayerId;
+  nodeId: string;
+  hasMovedThisTurn?: boolean;
+  hasAttackedThisTurn?: boolean;
+  displayOrder: number; 
+}
+
+interface QuantumGambitNodeData { 
+  id: string;
+  name: string;
+  type: 'CN' | 'QN' | 'KJ'; 
+  connections: string[]; 
+  resourcesPerTurn: number;
+  hasFabricationHub: boolean;
+  mapPosition: { x: number; y: number }; 
+  isKeyJunctionObjective?: boolean; 
+  continent?: string; 
+}
+
+interface QuantumGambitNode extends QuantumGambitNodeData { 
+  owner: PlayerId | 'NEUTRAL';
+  temporaryEffects?: string[];
+}
+
+
+interface QuantumGambitPlayerState {
+  id: PlayerId;
+  name: string;
+  color: string; 
+  bgColor: string; 
+  resources: number;
+  commandNodeId: string;
+  controlledKeyJunctionsTurns: Record<string, number>;
+  unitsDeployed: number; 
+}
+
+interface QuantumFluctuationEventBase {
+  id: string;
+  descriptionTemplate: string;
+  effectType: string;
+  details?: any;
+}
+
+interface ActiveQuantumFluctuationEvent extends QuantumFluctuationEventBase {
+  resolvedDescription: string;
+  targetNodeIds?: string[];
+  targetPlayerId?: PlayerId;
+  isActiveThisTurn: boolean;
+  effectApplied?: boolean;
+}
+
+interface BattleReport {
+  attacker: PlayerId;
+  defender: PlayerId;
+  fromNodeId: string;
+  toNodeId: string;
+  attackingUnitsCommitted: Array<{ type: QuantumUnitType; id: string }>;
+  defendingUnitsInitial: Array<{ type: QuantumUnitType; id: string }>;
+  rounds: Array<{
+    attackerRolls: number[];
+    defenderRolls: number[];
+    attackerModifiedRolls?: number[];
+    defenderModifiedRolls?: number[];
+    attackerCasualties: number;
+    defenderCasualties: number;
+  }>;
+  outcome: 'attacker_wins' | 'defender_wins' | 'stalemate_retreat' | 'defender_eliminated_no_capture';
+  attackerLosses: Array<{ type: QuantumUnitType; id: string }>;
+  defenderLosses: Array<{ type: QuantumUnitType; id: string }>;
+  nodeCaptured: boolean;
+}
+
+interface GameLogMessage {
+  id: string;
+  sender: string; 
+  text: string;
+  color?: string;
+  icon?: React.ReactNode;
+  timestamp: number;
+}
+
+type GamePhase = 'FLUCTUATION' | 'RESOURCE' | 'DEPLOYMENT' | 'ATTACK' | 'MANEUVER' | 'GAME_OVER';
+
+interface QuantumGambitGameState { // Renaming to NoosphericConquestGameState internally for clarity
+  nodes: Record<string, QuantumGambitNode>;
+  units: Record<string, QuantumUnit>;
+  players: Record<PlayerId, QuantumGambitPlayerState>;
+  currentTurn: number;
+  currentPlayerId: PlayerId;
+  currentPhase: GamePhase;
+  gameLog: GameLogMessage[];
+  activeFluctuationEvent?: ActiveQuantumFluctuationEvent | null;
+  battleReport?: BattleReport | null;
+  winner?: PlayerId | 'DRAW';
+  gameOverMessage?: string;
+  keyJunctionsOnMap: string[];
+  turnLimit: number;
+  mockAICoT_AI1: string; 
+  mockAICoT_AI2: string; 
+  isBattlePopupVisible: boolean;
+  turnStartTime: number | null; 
+  selectedNodeId: string | null; 
+  currentMapTemplateName: string; 
+}
+
+// --- Constants (from design document, adapted for mock) ---
+const AI1_ID: PlayerId = 'AI1';
+const AI2_ID: PlayerId = 'AI2';
+const AI1_NAME = "GEM-Q";
+const AI2_NAME = "AXIOM";
+const SYSTEM_SENDER_NAME = "SYSTEM";
+const EVENT_SENDER_NAME = "EVENT";
+
+const THEME_COLORS = {
+  AI1: { text: 'text-red-400', bg: 'bg-red-600', border: 'border-red-500', ring: 'ring-red-500', fill: 'fill-red-600' },
+  AI2: { text: 'text-cyan-400', bg: 'bg-cyan-600', border: 'border-cyan-500', ring: 'ring-cyan-500', fill: 'fill-cyan-600' },
+  NEUTRAL: { text: 'text-gray-400', bg: 'bg-gray-700', border: 'border-gray-600', ring: 'ring-gray-500', fill: 'fill-gray-700' },
+  SYSTEM: 'text-yellow-400',
+  EVENT: 'text-purple-400',
+  INFO: 'text-blue-300',
+  ERROR: 'text-orange-400',
+  TEXT_HEADING: 'text-green-200',
+  TEXT_BASE: 'text-green-400',
+  TEXT_MUTED: 'text-green-300',
+  BG_PANEL: 'bg-gray-900 bg-opacity-80 backdrop-blur-sm',
+  BORDER_BASE: 'border-green-700',
+  BORDER_STRONG: 'border-green-500',
+  KJ_STROKE: 'stroke-yellow-400',
+  CN_STROKE: 'stroke-orange-400',
+};
+
+const NOOSPHERIC_CONQUEST_TURN_LIMIT = 50; 
+const NOOSPHERIC_CONQUEST_INITIAL_RESOURCES = 15; 
+const NOOSPHERIC_CONQUEST_CONSECUTIVE_KJ_CONTROL_TURNS_NEEDED = 2;
+
+const NC_UNIT_DEFINITIONS: Record<QuantumUnitType, { // NC for Noospheric Conquest
+  cost: number; attackDice: number; defenseDice: number; name: string; icon: React.ReactNode; special?: string
+}> = {
+  [QuantumUnitType.LOGIC_CORE]: { cost: 3, attackDice: 2, defenseDice: 2, name: "Logic Core", icon: <LucideSwords size={16} /> },
+  [QuantumUnitType.SHIELDING_NODE_UNIT]: { cost: 4, attackDice: 1, defenseDice: 3, name: "Shielding Node", icon: <LucideShield size={16} />, special: "+1 to defense rolls" },
+  [QuantumUnitType.QUANTUM_ENTANGLER]: { cost: 5, attackDice: 1, defenseDice: 1, name: "Quantum Entangler", icon: <LucideZap size={16} />, special: "Phase Shift / Interference" },
+};
+
+// --- MAP TEMPLATES ---
+interface MapTemplate {
+    name: string;
+    nodes: QuantumGambitNodeData[];
+    ai1StartNodeId: string;
+    ai1InitialControlledNodes: string[]; 
+    ai2StartNodeId: string;
+    ai2InitialControlledNodes: string[]; 
+    neutralKJsWithUnits?: string[]; 
+    neutralNodesWithUnits?: string[]; 
+}
+
+const MAP_TEMPLATES: MapTemplate[] = [
+    {
+        name: "Classic Lattice",
+        ai1StartNodeId: "N1", ai1InitialControlledNodes: ["N1", "N3", "N8"],
+        ai2StartNodeId: "N2", ai2InitialControlledNodes: ["N2", "N7", "N12"],
+        neutralKJsWithUnits: ["N5", "N10"],
+        nodes: [
+          { id: "N1", name: "GEM-Q CN", type: 'CN', connections: ["N3", "N8"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 10, y: 10 }, continent: "West" },
+          { id: "N2", name: "AXIOM CN", type: 'CN', connections: ["N7", "N12"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 90, y: 10 }, continent: "East" },
+          { id: "N3", name: "Peri-Alpha", type: 'QN', connections: ["N1", "N5", "N9"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 30, y: 20 }, continent: "West" },
+          { id: "N5", name: "KJ Vega", type: 'KJ', connections: ["N3", "N6", "N7"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 50, y: 30 }, isKeyJunctionObjective: true, continent: "Central" },
+          { id: "N6", name: "Relay Eps.", type: 'QN', connections: ["N5", "N9", "N10", "N13"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 40, y: 50 }, continent: "Central" },
+          { id: "N7", name: "Peri-Beta", type: 'QN', connections: ["N2", "N5", "N11"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 70, y: 20 }, continent: "East" },
+          { id: "N8", name: "Quad Gamma", type: 'QN', connections: ["N1", "N9", "N13"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 20, y: 40 }, continent: "West" },
+          { id: "N9", name: "X-Link Delta", type: 'QN', connections: ["N3", "N6", "N8"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 30, y: 70 }, continent: "West" },
+          { id: "N10", name: "KJ Sirius", type: 'KJ', connections: ["N6", "N11", "N14"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 60, y: 70 }, isKeyJunctionObjective: true, continent: "Central" },
+          { id: "N11", name: "X-Link Zeta", type: 'QN', connections: ["N7", "N10", "N12"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 70, y: 50 }, continent: "East" },
+          { id: "N12", name: "Quad Eta", type: 'QN', connections: ["N2", "N11", "N14"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 80, y: 40 }, continent: "East" },
+          { id: "N13", name: "Core Theta", type: 'QN', connections: ["N6", "N8"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 35, y: 90 }, continent: "South" },
+          { id: "N14", name: "Core Iota", type: 'QN', connections: ["N10", "N12"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 65, y: 90 }, continent: "South" },
+        ]
+    },
+    {
+        name: "Twin Peaks",
+        ai1StartNodeId: "TP_N1", ai1InitialControlledNodes: ["TP_N1", "TP_N3"],
+        ai2StartNodeId: "TP_N2", ai2InitialControlledNodes: ["TP_N2", "TP_N4"],
+        neutralKJsWithUnits: ["TP_KJ1", "TP_KJ2"],
+        nodes: [
+            { id: "TP_N1", name: "GEM-Q Base", type: 'CN', connections: ["TP_N3", "TP_KJ1"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 15, y: 50 }, continent: "West" },
+            { id: "TP_N2", name: "AXIOM Base", type: 'CN', connections: ["TP_N4", "TP_KJ2"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 85, y: 50 }, continent: "East" },
+            { id: "TP_N3", name: "GEM-Q Outpost", type: 'QN', connections: ["TP_N1", "TP_N5"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 30, y: 30 }, continent: "West" },
+            { id: "TP_N4", name: "AXIOM Outpost", type: 'QN', connections: ["TP_N2", "TP_N6"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 70, y: 30 }, continent: "East" },
+            { id: "TP_N5", name: "Upper Bridge", type: 'QN', connections: ["TP_N3", "TP_N6", "TP_KJ1"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 50, y: 20 }, continent: "North" },
+            { id: "TP_N6", name: "Lower Bridge", type: 'QN', connections: ["TP_N4", "TP_N5", "TP_KJ2"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 50, y: 80 }, continent: "South" },
+            { id: "TP_KJ1", name: "North KJ", type: 'KJ', connections: ["TP_N1", "TP_N5"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 35, y: 70 }, isKeyJunctionObjective: true, continent: "West" },
+            { id: "TP_KJ2", name: "South KJ", type: 'KJ', connections: ["TP_N2", "TP_N6"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 65, y: 70 }, isKeyJunctionObjective: true, continent: "East" },
+        ]
+    },
+    { 
+        name: "Global Conflict",
+        ai1StartNodeId: "GC_NA_W", ai1InitialControlledNodes: ["GC_NA_W", "GC_NA_C", "GC_NA_N"],
+        ai2StartNodeId: "GC_AS_E", ai2InitialControlledNodes: ["GC_AS_E", "GC_AS_C", "GC_AS_S"],
+        neutralKJsWithUnits: ["GC_EU_KJ", "GC_AF_KJ", "GC_SA_KJ"],
+        neutralNodesWithUnits: ["GC_OC_C"], 
+        nodes: [
+            { id: "GC_NA_W", name: "NA West", type: 'CN', connections: ["GC_NA_C", "GC_NA_N", "GC_SA_N"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 15, y: 25 }, continent: "NA" },
+            { id: "GC_NA_C", name: "NA Central", type: 'QN', connections: ["GC_NA_W", "GC_NA_E", "GC_NA_N"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 25, y: 35 }, continent: "NA" },
+            { id: "GC_NA_E", name: "NA East", type: 'QN', connections: ["GC_NA_C", "GC_EU_W"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 35, y: 25 }, continent: "NA" },
+            { id: "GC_NA_N", name: "NA North", type: 'QN', connections: ["GC_NA_W", "GC_NA_C", "GC_AS_NW"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 20, y: 10 }, continent: "NA" },
+            { id: "GC_SA_N", name: "SA North", type: 'QN', connections: ["GC_NA_W", "GC_SA_KJ"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 25, y: 60 }, continent: "SA" },
+            { id: "GC_SA_KJ", name: "SA KJ", type: 'KJ', connections: ["GC_SA_N", "GC_AF_W"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 30, y: 75 }, isKeyJunctionObjective: true, continent: "SA" },
+            { id: "GC_EU_W", name: "EU West", type: 'QN', connections: ["GC_NA_E", "GC_EU_KJ", "GC_AF_N"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 45, y: 30 }, continent: "EU" },
+            { id: "GC_EU_KJ", name: "EU KJ", type: 'KJ', connections: ["GC_EU_W", "GC_EU_E", "GC_AS_W"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 55, y: 40 }, isKeyJunctionObjective: true, continent: "EU" },
+            { id: "GC_EU_E", name: "EU East", type: 'QN', connections: ["GC_EU_KJ", "GC_AS_W"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 65, y: 30 }, continent: "EU" },
+            { id: "GC_AF_N", name: "AF North", type: 'QN', connections: ["GC_EU_W", "GC_AF_KJ", "GC_AS_SW"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 50, y: 60 }, continent: "AF" },
+            { id: "GC_AF_W", name: "AF West", type: 'QN', connections: ["GC_SA_KJ", "GC_AF_KJ"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 40, y: 80 }, continent: "AF" }, 
+            { id: "GC_AF_KJ", name: "AF KJ", type: 'KJ', connections: ["GC_AF_N", "GC_AF_W"], resourcesPerTurn: 2, hasFabricationHub: false, mapPosition: { x: 45, y: 70 }, isKeyJunctionObjective: true, continent: "AF" },
+            { id: "GC_AS_NW", name: "AS NW", type: 'QN', connections: ["GC_NA_N", "GC_AS_W"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 50, y: 10 }, continent: "AS" },
+            { id: "GC_AS_W", name: "AS West", type: 'QN', connections: ["GC_AS_NW", "GC_EU_KJ", "GC_EU_E", "GC_AS_C", "GC_AS_SW"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 70, y: 20 }, continent: "AS" },
+            { id: "GC_AS_C", name: "AS Central", type: 'QN', connections: ["GC_AS_W", "GC_AS_E", "GC_AS_S"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 80, y: 30 }, continent: "AS" },
+            { id: "GC_AS_E", name: "AS East", type: 'CN', connections: ["GC_AS_C", "GC_AS_S", "GC_OC_N"], resourcesPerTurn: 3, hasFabricationHub: true, mapPosition: { x: 90, y: 25 }, continent: "AS" },
+            { id: "GC_AS_S", name: "AS South", type: 'QN', connections: ["GC_AS_C", "GC_AS_E", "GC_OC_N"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 85, y: 45 }, continent: "AS" },
+            { id: "GC_AS_SW", name: "AS SW", type: 'QN', connections: ["GC_AS_W", "GC_AF_N", "GC_OC_W"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 65, y: 55 }, continent: "AS" },
+            { id: "GC_OC_N", name: "OC North", type: 'QN', connections: ["GC_AS_E", "GC_AS_S", "GC_OC_C"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 90, y: 60 }, continent: "OC" },
+            { id: "GC_OC_C", name: "OC Central", type: 'QN', connections: ["GC_OC_N", "GC_OC_W"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 80, y: 75 }, continent: "OC" },
+            { id: "GC_OC_W", name: "OC West", type: 'QN', connections: ["GC_AS_SW", "GC_OC_C"], resourcesPerTurn: 1, hasFabricationHub: false, mapPosition: { x: 70, y: 85 }, continent: "OC" },
+        ]
+    }
+];
+
+
+const QG_QUANTUM_FLUCTUATION_EVENTS_POOL: QuantumFluctuationEventBase[] = [
+  { id: "QF001", descriptionTemplate: "Resource Surge! Node {targetNodeName} produces +2 QR for its controller this turn.", effectType: "RESOURCE_NODE_BONUS", details: { bonusValue: 2, numTargetNodes: 1, targetCriteria: "ANY_CONTROLLED" } },
+  { id: "QF002", descriptionTemplate: "Temporal Anomaly! {playerName} gains an extra Maneuver Phase this turn.", effectType: "EXTRA_MANEUVER_PHASE", details: {} },
+  { id: "QF003", descriptionTemplate: "Weakened Defenses near {targetNodeName}! Units in {targetNodeName} and its direct connections have -1 to their defense roll results this turn.", effectType: "REGIONAL_DEFENSE_DEBUFF", details: { debuffValue: 1, numTargetNodes: 1, targetCriteria: "ANY" } },
+  { id: "QF004", descriptionTemplate: "Entanglement Echo! {playerName} can deploy 1 Logic Core to any friendly node with a Fabrication Hub for free.", effectType: "FREE_UNIT_DEPLOYMENT", details: { unitType: QuantumUnitType.LOGIC_CORE, quantity: 1 } },
+];
+
+// --- Game State Initialization and Reducer ---
+const generateUnitId = (type: QuantumUnitType, owner: PlayerId, count: number) => `${type}-${owner}-${count}`;
+
+const initialGameState = (selectedTemplate?: MapTemplate): QuantumGambitGameState => {
+  const template = selectedTemplate || MAP_TEMPLATES[Math.floor(Math.random() * MAP_TEMPLATES.length)];
+  
+  const nodes: Record<string, QuantumGambitNode> = {};
+  template.nodes.forEach(nodeData => {
+    nodes[nodeData.id] = {
+      ...nodeData,
+      owner: 'NEUTRAL', 
+      temporaryEffects: [],
+    };
+  });
+
+  const units: Record<string, QuantumUnit> = {};
+  const players: Record<PlayerId, QuantumGambitPlayerState> = {
+    [AI1_ID]: { id: AI1_ID, name: AI1_NAME, color: THEME_COLORS.AI1.text, bgColor: THEME_COLORS.AI1.bg, resources: NOOSPHERIC_CONQUEST_INITIAL_RESOURCES, commandNodeId: template.ai1StartNodeId, controlledKeyJunctionsTurns: {}, unitsDeployed: 0 },
+    [AI2_ID]: { id: AI2_ID, name: AI2_NAME, color: THEME_COLORS.AI2.text, bgColor: THEME_COLORS.AI2.bg, resources: NOOSPHERIC_CONQUEST_INITIAL_RESOURCES, commandNodeId: template.ai2StartNodeId, controlledKeyJunctionsTurns: {}, unitsDeployed: 0 },
+  };
+
+  template.ai1InitialControlledNodes.forEach(nodeId => {
+      if(nodes[nodeId]) nodes[nodeId].owner = AI1_ID;
+  });
+  let p1UnitsDeployedCount = 0; 
+  units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, ++p1UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, p1UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI1_ID, nodeId: template.ai1StartNodeId, displayOrder: 1 };
+  units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, ++p1UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, p1UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI1_ID, nodeId: template.ai1StartNodeId, displayOrder: 2 };
+  const ai1OtherStartNodes = template.ai1InitialControlledNodes.filter(id => id !== template.ai1StartNodeId);
+  if (ai1OtherStartNodes.length > 0 && nodes[ai1OtherStartNodes[0]]) {
+      units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, ++p1UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI1_ID, p1UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI1_ID, nodeId: ai1OtherStartNodes[0], displayOrder: 1 };
+  }
+  players[AI1_ID].unitsDeployed = p1UnitsDeployedCount;
+
+
+  template.ai2InitialControlledNodes.forEach(nodeId => {
+      if(nodes[nodeId]) nodes[nodeId].owner = AI2_ID;
+  });
+  let p2UnitsDeployedCount = 0;
+  units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, ++p2UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, p2UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI2_ID, nodeId: template.ai2StartNodeId, displayOrder: 1 };
+  units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, ++p2UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, p2UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI2_ID, nodeId: template.ai2StartNodeId, displayOrder: 2 };
+  const ai2OtherStartNodes = template.ai2InitialControlledNodes.filter(id => id !== template.ai2StartNodeId);
+  if (ai2OtherStartNodes.length > 0 && nodes[ai2OtherStartNodes[0]]) {
+      units[generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, ++p2UnitsDeployedCount)] = { id: generateUnitId(QuantumUnitType.LOGIC_CORE, AI2_ID, p2UnitsDeployedCount), type: QuantumUnitType.LOGIC_CORE, owner: AI2_ID, nodeId: ai2OtherStartNodes[0], displayOrder: 1 };
+  }
+  players[AI2_ID].unitsDeployed = p2UnitsDeployedCount;
+  
+  let neutralUnitsCount = 0;
+  template.neutralKJsWithUnits?.forEach(nodeId => {
+      if(nodes[nodeId]) {
+          nodes[nodeId].owner = 'NEUTRAL';
+          const unitId = generateUnitId(QuantumUnitType.LOGIC_CORE, 'NEUTRAL' as PlayerId, ++neutralUnitsCount);
+          units[unitId] = { id: unitId, type: QuantumUnitType.LOGIC_CORE, owner: 'NEUTRAL' as PlayerId, nodeId: nodeId, displayOrder: 1 };
+      }
+  });
+   template.neutralNodesWithUnits?.forEach(nodeId => {
+      if(nodes[nodeId]) {
+          nodes[nodeId].owner = 'NEUTRAL';
+          const unitId = generateUnitId(QuantumUnitType.LOGIC_CORE, 'NEUTRAL' as PlayerId, ++neutralUnitsCount);
+          units[unitId] = { id: unitId, type: QuantumUnitType.LOGIC_CORE, owner: 'NEUTRAL' as PlayerId, nodeId: nodeId, displayOrder: 1 };
+      }
+  });
+  
+  const keyJunctionsOnMap = template.nodes.filter(n => n.type === 'KJ').map(n => n.id);
+
+  return {
+    nodes, units, players, currentTurn: 1, currentPlayerId: AI1_ID, currentPhase: 'FLUCTUATION',
+    gameLog: [{ id: 'start', sender: SYSTEM_SENDER_NAME, text: `Noospheric Conquest on "${template.name}" map. Turn 1: ${AI1_NAME} (Red). Fluctuation Phase.`, color: THEME_COLORS.SYSTEM, icon: <LucideAtom size={16}/>, timestamp: Date.now() }],
+    activeFluctuationEvent: null, battleReport: null,
+    keyJunctionsOnMap,
+    turnLimit: NOOSPHERIC_CONQUEST_TURN_LIMIT,
+    mockAICoT_AI1: "Preparing initial strategy...", mockAICoT_AI2: "Awaiting opponent's move...",
+    isBattlePopupVisible: false, turnStartTime: Date.now(), selectedNodeId: null, currentMapTemplateName: template.name,
+  };
+};
+
+type DeploymentOrder = { unitType: QuantumUnitType; nodeId: string; quantity: number; }
+type AttackDeclaration = { fromNodeId: string; toNodeId: string; attackingUnits: QuantumUnit[]; } 
+type ManeuverOrder = { unitId: string; toNodeId: string; }
+
+type GameAction =
+  | { type: 'START_GAME'; payload?: { templateName?: string } } 
+  | { type: 'ADVANCE_PHASE'; payload?: any } 
+  | { type: 'SET_ACTIVE_EVENT'; payload: ActiveQuantumFluctuationEvent }
+  | { type: 'APPLY_EVENT_EFFECTS_COMPLETE' } | { type: 'COLLECT_RESOURCES' }
+  | { type: 'DEPLOY_UNITS'; payload: { playerId: PlayerId; deployments: DeploymentOrder[] } }
+  | { type: 'DECLARE_ATTACK'; payload: { attack: AttackDeclaration; battleReport: BattleReport } }
+  | { type: 'MANEUVER_UNITS'; payload: { playerId: PlayerId; maneuvers: ManeuverOrder[] } }
+  | { type: 'SET_GAME_OVER'; payload: { winner?: PlayerId | 'DRAW'; message: string } }
+  | { type: 'ADD_LOG'; payload: Omit<GameLogMessage, 'id' | 'timestamp'> }
+  | { type: 'UPDATE_AI_COT'; payload: { playerId: PlayerId; cot: string } }
+  | { type: 'SHOW_BATTLE_POPUP'; payload: BattleReport } | { type: 'HIDE_BATTLE_POPUP' }
+  | { type: 'RESET_GAME_FOR_NEW_TURN'; payload?: { units?: Record<string, Partial<QuantumUnit>> } } 
+  | { type: 'SELECT_NODE'; payload: string | null };
+
+
+// Game Reducer
+const gameReducer = (state: QuantumGambitGameState, action: GameAction): QuantumGambitGameState => {
+   switch (action.type) {
+    case 'ADD_LOG':
+      return {
+        ...state,
+        gameLog: [...state.gameLog, { ...action.payload, id: `log-${Date.now()}-${Math.random()}`, timestamp: Date.now() }],
+      };
+    case 'UPDATE_AI_COT':
+      if (action.payload.playerId === AI1_ID) return { ...state, mockAICoT_AI1: action.payload.cot };
+      if (action.payload.playerId === AI2_ID) return { ...state, mockAICoT_AI2: action.payload.cot };
+      return state;
+    case 'SELECT_NODE':
+        return { ...state, selectedNodeId: action.payload };
+    
+    case 'SET_ACTIVE_EVENT':
+      return { ...state, activeFluctuationEvent: action.payload };
+    
+    case 'APPLY_EVENT_EFFECTS_COMPLETE': {
+        const updatedPlayers = { ...state.players, 
+            [AI1_ID]: {...state.players[AI1_ID]}, 
+            [AI2_ID]: {...state.players[AI2_ID]} 
+        };
+        const updatedUnits = { ...state.units };
+        let updatedActiveEvent = state.activeFluctuationEvent ? { ...state.activeFluctuationEvent, effectApplied: true } : null;
+
+        if (updatedActiveEvent?.effectType === "RESOURCE_NODE_BONUS" && updatedActiveEvent.targetNodeIds) {
+            const targetNodeId = updatedActiveEvent.targetNodeIds[0];
+            const node = state.nodes[targetNodeId];
+            if (node && node.owner !== 'NEUTRAL') {
+                const ownerId = node.owner;
+                updatedPlayers[ownerId].resources += updatedActiveEvent.details.bonusValue;
+            }
+        }
+        if (updatedActiveEvent?.effectType === "FREE_UNIT_DEPLOYMENT" && updatedActiveEvent.targetPlayerId) {
+            const playerId = updatedActiveEvent.targetPlayerId;
+            const playerHubs = Object.values(state.nodes).filter(n => n.owner === playerId && n.hasFabricationHub);
+            if (playerHubs.length > 0) {
+                const targetNodeId = playerHubs[0].id;
+                const unitType = updatedActiveEvent.details.unitType as QuantumUnitType;
+                const newUnitsDeployedCount = updatedPlayers[playerId].unitsDeployed + 1;
+                updatedPlayers[playerId].unitsDeployed = newUnitsDeployedCount;
+                const unitId = generateUnitId(unitType, playerId, newUnitsDeployedCount);
+                const existingUnitsInNode = Object.values(state.units).filter(u => u.nodeId === targetNodeId).length;
+                updatedUnits[unitId] = { id: unitId, type: unitType, owner: playerId, nodeId: targetNodeId, displayOrder: existingUnitsInNode + 1 };
+            }
+        }
+        return { ...state, activeFluctuationEvent: updatedActiveEvent, players: updatedPlayers, units: updatedUnits };
+    }
+
+    case 'COLLECT_RESOURCES': {
+      const currentPlayerState = state.players[state.currentPlayerId];
+      let newResources = currentPlayerState.resources;
+      Object.values(state.nodes).forEach(node => {
+        if (node.owner === state.currentPlayerId) {
+          newResources += node.resourcesPerTurn;
+        }
+      });
+      return {
+        ...state,
+        players: {
+          ...state.players,
+          [state.currentPlayerId]: { ...currentPlayerState, resources: newResources },
+        },
+      };
+    }
+    
+    case 'DEPLOY_UNITS': {
+        const { playerId, deployments } = action.payload;
+        const updatedPlayerState = { ...state.players[playerId] };
+        const updatedUnits = { ...state.units };
+        let currentUnitsDeployedCount = updatedPlayerState.unitsDeployed;
+
+        deployments.forEach(order => {
+            const unitDef = NC_UNIT_DEFINITIONS[order.unitType];
+            if (updatedPlayerState.resources >= unitDef.cost * order.quantity && state.nodes[order.nodeId]?.hasFabricationHub && state.nodes[order.nodeId]?.owner === playerId) {
+                for (let i = 0; i < order.quantity; i++) {
+                    updatedPlayerState.resources -= unitDef.cost;
+                    currentUnitsDeployedCount++;
+                    const unitId = generateUnitId(order.unitType, playerId, currentUnitsDeployedCount);
+                    const existingUnitsInNode = Object.values(updatedUnits).filter(u => u.nodeId === order.nodeId).length;
+                    updatedUnits[unitId] = { id: unitId, type: order.unitType, owner: playerId, nodeId: order.nodeId, displayOrder: existingUnitsInNode + 1 };
+                }
+            }
+        });
+        updatedPlayerState.unitsDeployed = currentUnitsDeployedCount;
+        return { 
+            ...state, 
+            players: { ...state.players, [playerId]: updatedPlayerState }, 
+            units: updatedUnits 
+        };
+    }
+
+    case 'DECLARE_ATTACK': {
+        const { attack, battleReport } = action.payload;
+        const updatedUnits = { ...state.units };
+        const updatedNodes = { ...state.nodes }; 
+
+        battleReport.attackerLosses.forEach(lostUnit => { delete updatedUnits[lostUnit.id]; });
+        battleReport.defenderLosses.forEach(lostUnit => { delete updatedUnits[lostUnit.id]; });
+        
+        const battleNodeIds = new Set([attack.fromNodeId, attack.toNodeId]);
+        battleNodeIds.forEach(nodeId => {
+            const unitsInNode = Object.values(updatedUnits).filter(u => u.nodeId === nodeId).sort((a,b) => a.displayOrder - b.displayOrder);
+            unitsInNode.forEach((u,idx) => { 
+                if(updatedUnits[u.id]) updatedUnits[u.id].displayOrder = idx + 1; 
+            });
+        });
+
+        if (battleReport.nodeCaptured) {
+            const capturedNodeOriginal = state.nodes[attack.toNodeId]; 
+            updatedNodes[attack.toNodeId] = { ...capturedNodeOriginal, owner: battleReport.attacker }; 
+            
+            const survivingAttackerIds = attack.attackingUnits.map(au => au.id).filter(id => !battleReport.attackerLosses.some(al => al.id === id));
+            survivingAttackerIds.forEach(unitId => {
+                if (updatedUnits[unitId]) { 
+                    updatedUnits[unitId] = { ...updatedUnits[unitId], nodeId: attack.toNodeId }; 
+                }
+            });
+            const unitsInCapturedNode = Object.values(updatedUnits).filter(u => u.nodeId === attack.toNodeId).sort((a,b) => a.displayOrder - b.displayOrder);
+            unitsInCapturedNode.forEach((u,idx) => { 
+                 if(updatedUnits[u.id]) updatedUnits[u.id].displayOrder = idx + 1; 
+            });
+
+            if (capturedNodeOriginal.type === 'CN') {
+                const winner = battleReport.attacker;
+                const loser = winner === AI1_ID ? AI2_ID : AI1_ID;
+                return {
+                    ...state, units: updatedUnits, nodes: updatedNodes,
+                    battleReport, isBattlePopupVisible: true,
+                    winner, currentPhase: 'GAME_OVER',
+                    gameOverMessage: `${state.players[winner].name} captured ${state.players[loser].name}'s Command Node!`,
+                    turnStartTime: null,
+                };
+            }
+        }
+        return { ...state, units: updatedUnits, nodes: updatedNodes, battleReport, isBattlePopupVisible: true };
+    }
+    
+    case 'SHOW_BATTLE_POPUP':
+        return { ...state, battleReport: action.payload, isBattlePopupVisible: true };
+    case 'HIDE_BATTLE_POPUP':
+        return { ...state, isBattlePopupVisible: false, battleReport: null };
+
+    case 'MANEUVER_UNITS': {
+        const { playerId, maneuvers } = action.payload;
+        const updatedUnits = { ...state.units };
+        const originNodeIdsProcessed = new Set<string>();
+
+        maneuvers.forEach(order => {
+            const unit = state.units[order.unitId];
+            if (unit && unit.owner === playerId && !unit.hasMovedThisTurn) {
+                const currentUnitNode = state.nodes[unit.nodeId];
+                const targetNode = state.nodes[order.toNodeId];
+                if (targetNode && targetNode.owner === playerId && currentUnitNode.connections.includes(order.toNodeId)) {
+                    originNodeIdsProcessed.add(unit.nodeId);
+                    updatedUnits[order.unitId] = { ...unit, nodeId: order.toNodeId, hasMovedThisTurn: true };
+                }
+            }
+        });
+        const affectedNodeIds = new Set([...originNodeIdsProcessed, ...maneuvers.map(m => m.toNodeId)]);
+        affectedNodeIds.forEach(nodeId => {
+            const unitsInNode = Object.values(updatedUnits).filter(u => u.nodeId === nodeId).sort((a,b) => a.displayOrder - b.displayOrder);
+            unitsInNode.forEach((u,idx) => { 
+                if (updatedUnits[u.id]) updatedUnits[u.id].displayOrder = idx + 1; 
+            });
+        });
+        return { ...state, units: updatedUnits };
+    }
+    
+    case 'RESET_GAME_FOR_NEW_TURN': {
+        const updatedUnits = { ...state.units };
+        if (action.payload?.units) {
+            Object.keys(action.payload.units).forEach(unitId => {
+                if (updatedUnits[unitId]) {
+                    updatedUnits[unitId] = { ...updatedUnits[unitId], ...action.payload.units![unitId] };
+                }
+            });
+        }
+        Object.keys(updatedUnits).forEach(unitId => {
+            if (updatedUnits[unitId]) { 
+                 updatedUnits[unitId] = { ...updatedUnits[unitId], hasMovedThisTurn: false, hasAttackedThisTurn: false };
+            }
+        });
+        return { ...state, units: updatedUnits };
+    }
+
+    case 'ADVANCE_PHASE': {
+      let nextPhase: GamePhase = state.currentPhase;
+      let nextPlayerId = state.currentPlayerId;
+      let newTurn = state.currentTurn;
+      let newTurnStartTime = state.turnStartTime;
+
+      switch (state.currentPhase) {
+        case 'FLUCTUATION': nextPhase = 'RESOURCE'; break;
+        case 'RESOURCE':    nextPhase = 'DEPLOYMENT'; break;
+        case 'DEPLOYMENT':  nextPhase = 'ATTACK'; break;
+        case 'ATTACK':      nextPhase = 'MANEUVER'; break;
+        case 'MANEUVER':
+            nextPhase = 'FLUCTUATION'; 
+            nextPlayerId = state.currentPlayerId === AI1_ID ? AI2_ID : AI1_ID;
+            if (nextPlayerId === AI1_ID) newTurn = state.currentTurn + 1;
+            newTurnStartTime = Date.now(); 
+          break;
+        default: break;
+      }
+      
+      if (nextPhase === 'FLUCTUATION' && (newTurn > state.currentTurn || (newTurn === state.currentTurn && nextPlayerId !== state.currentPlayerId) )) { 
+        const updatedPlayersData = { 
+            ...state.players,
+            [AI1_ID]: { ...state.players[AI1_ID], controlledKeyJunctionsTurns: { ...state.players[AI1_ID].controlledKeyJunctionsTurns } },
+            [AI2_ID]: { ...state.players[AI2_ID], controlledKeyJunctionsTurns: { ...state.players[AI2_ID].controlledKeyJunctionsTurns } }
+        };
+
+        state.keyJunctionsOnMap.forEach(kjNodeId => {
+            const node = state.nodes[kjNodeId];
+            if (node.owner !== 'NEUTRAL') {
+                if (node.owner === state.currentPlayerId) { 
+                    updatedPlayersData[state.currentPlayerId].controlledKeyJunctionsTurns[kjNodeId] = (updatedPlayersData[state.currentPlayerId].controlledKeyJunctionsTurns[kjNodeId] || 0) + 1;
+                } else { 
+                    if (updatedPlayersData[state.currentPlayerId].controlledKeyJunctionsTurns[kjNodeId] > 0) {
+                         updatedPlayersData[state.currentPlayerId].controlledKeyJunctionsTurns[kjNodeId] = 0;
+                    }
+                }
+            } else { 
+                 updatedPlayersData[AI1_ID].controlledKeyJunctionsTurns[kjNodeId] = 0;
+                 updatedPlayersData[AI2_ID].controlledKeyJunctionsTurns[kjNodeId] = 0;
+            }
+        });
+        
+        let kjWinPlayer: PlayerId | null = null;
+        [AI1_ID, AI2_ID].forEach(pid => {
+            let controlledKJsCount = 0;
+            state.keyJunctionsOnMap.forEach(kjId => {
+                if (updatedPlayersData[pid].controlledKeyJunctionsTurns[kjId] >= NOOSPHERIC_CONQUEST_CONSECUTIVE_KJ_CONTROL_TURNS_NEEDED) {
+                    controlledKJsCount++;
+                }
+            });
+            if (state.keyJunctionsOnMap.length > 0 && controlledKJsCount >= state.keyJunctionsOnMap.length) { 
+                kjWinPlayer = pid;
+            }
+        });
+
+        if (kjWinPlayer) {
+            return {
+                ...state, players: updatedPlayersData, winner: kjWinPlayer, currentPhase: 'GAME_OVER',
+                gameOverMessage: `${state.players[kjWinPlayer].name} wins by KJ control!`, turnStartTime: null,
+            };
+        }
+        if (newTurn > state.turnLimit) {
+            let p1Influence = updatedPlayersData[AI1_ID].resources;
+            let p2Influence = updatedPlayersData[AI2_ID].resources;
+            Object.values(state.nodes).forEach(n => {
+                if(n.owner === AI1_ID) p1Influence += n.resourcesPerTurn * 5;
+                if(n.owner === AI2_ID) p2Influence += n.resourcesPerTurn * 5;
+            });
+            Object.values(state.units).forEach(u => {
+                if(u.owner === AI1_ID) p1Influence += NC_UNIT_DEFINITIONS[u.type].cost;
+                if(u.owner === AI2_ID) p2Influence += NC_UNIT_DEFINITIONS[u.type].cost;
+            });
+            const winner = p1Influence > p2Influence ? AI1_ID : p2Influence > p1Influence ? AI2_ID : 'DRAW';
+             return {
+                ...state, players: updatedPlayersData, winner, currentPhase: 'GAME_OVER',
+                gameOverMessage: `Turn limit! ${winner === 'DRAW' ? 'Draw!' : state.players[winner].name + ' wins by Influence!'} (P1: ${p1Influence}, P2: ${p2Influence})`,
+                turnStartTime: null,
+            };
+        }
+         return { ...state, players: updatedPlayersData, currentPhase: nextPhase, currentPlayerId: nextPlayerId, currentTurn: newTurn, activeFluctuationEvent: null, battleReport: null, turnStartTime: newTurnStartTime };
+      }
+      return { ...state, currentPhase: nextPhase, currentPlayerId: nextPlayerId, currentTurn: newTurn, battleReport: null, turnStartTime: (nextPhase === 'FLUCTUATION' && newTurnStartTime === state.turnStartTime ? Date.now() : newTurnStartTime) };
+    }
+
+    case 'SET_GAME_OVER':
+      return { ...state, currentPhase: 'GAME_OVER', winner: action.payload.winner, gameOverMessage: action.payload.message, turnStartTime: null };
+    
+    case 'START_GAME':
+        const selectedTemplate = action.payload?.templateName 
+            ? MAP_TEMPLATES.find(t => t.name === action.payload.templateName)
+            : undefined; 
+        return {...initialGameState(selectedTemplate), turnStartTime: Date.now()};
+
+    default:
+      return state;
+  }
+};
+
+
+// --- UI Components ---
+const CoTDisplay: React.FC<{ title: string; cot: string; isLoading: boolean; playerNameColor: string }> = ({ title, cot, isLoading, playerNameColor }) => (
+  <div className={`p-3 h-32 md:h-40 flex flex-col ${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} rounded-md shadow-md`}>
+    <h3 className={`text-sm font-semibold border-b ${THEME_COLORS.BORDER_STRONG} pb-1 mb-2 ${playerNameColor}`}>
+      {title} - Tactical Analysis
+    </h3>
+    <div className={`text-xs ${THEME_COLORS.TEXT_MUTED} overflow-y-auto flex-grow pr-1 scrollbar-thin scrollbar-thumb-gray-500 scrollbar-track-gray-700`}>
+      {isLoading && <p className="animate-pulse">Calculating optimal vector...</p>}
+      {!isLoading && cot && <p className="whitespace-pre-wrap break-words">{cot}</p>}
+      {!isLoading && !cot && <p>Awaiting directives...</p>}
+    </div>
+  </div>
+);
+
+const UnitIcon: React.FC<{type: QuantumUnitType, owner: PlayerId, size?: number, count?: number}> = ({ type, owner, size = 4, count }) => {
+    const def = NC_UNIT_DEFINITIONS[type];
+    const color = owner === AI1_ID ? THEME_COLORS.AI1.text : owner === AI2_ID ? THEME_COLORS.AI2.text : THEME_COLORS.NEUTRAL.text;
+    return (
+        <div className={`flex items-center ${color} scale-75 md:scale-90`} title={`${def.name}${count ? ' x'+count : ''}`}>
+            {React.cloneElement(def.icon as React.ReactElement, { size: size*4 })} 
+            {count && count > 1 && <span className="ml-1 text-xs">x{count}</span>}
+        </div>
+    );
+};
+
+
+const QuantumGambitMapDisplay: React.FC<{ gameState: QuantumGambitGameState, onNodeClick: (nodeId: string) => void, selectedNodeId: string | null }> = ({ gameState, onNodeClick, selectedNodeId }) => {
+  const { nodes, units } = gameState;
+  const mapSize = { width: 600, height: 400 }; 
+
+  return (
+    <div className={`relative ${THEME_COLORS.BG_PANEL} border-2 ${THEME_COLORS.BORDER_STRONG} rounded-lg shadow-2xl p-2 overflow-hidden aspect-[3/2]`}>
+      <svg viewBox={`0 0 ${mapSize.width} ${mapSize.height}`} className="w-full h-full">
+        {Object.values(nodes).map(node =>
+          node.connections.map(connId => {
+            const targetNode = nodes[connId];
+            if (targetNode && node.mapPosition && targetNode.mapPosition && node.id < targetNode.id) {
+                const isSevered = gameState.activeFluctuationEvent?.effectType === "SEVER_CONNECTION" &&
+                                  ((gameState.activeFluctuationEvent.targetNodeIds?.includes(node.id) && gameState.activeFluctuationEvent.targetNodeIds?.includes(targetNode.id)));
+                return (
+                  <line key={`${node.id}-${targetNode.id}`}
+                    x1={`${node.mapPosition.x}%`} y1={`${node.mapPosition.y}%`}
+                    x2={`${targetNode.mapPosition.x}%`} y2={`${targetNode.mapPosition.y}%`}
+                    className={`stroke-current ${isSevered ? 'text-orange-500 stroke-2 animate-pulse' : 'text-gray-600 opacity-70'} transition-all duration-300`}
+                    strokeWidth={isSevered ? 3 : 1.5} strokeDasharray={isSevered ? "4 2" : "none"} />
+                );
+            } return null;
+          })
+        )}
+        {Object.values(nodes).map(node => {
+          const nodeUnits = Object.values(units).filter(u => u.nodeId === node.id).sort((a,b) => a.displayOrder - b.displayOrder);
+          const ownerTheme = node.owner === AI1_ID ? THEME_COLORS.AI1 : node.owner === AI2_ID ? THEME_COLORS.AI2 : THEME_COLORS.NEUTRAL;
+          const isSelected = node.id === selectedNodeId;
+          const isKJObjective = node.isKeyJunctionObjective;
+
+          return (
+            <g key={node.id} transform={`translate(${node.mapPosition.x * mapSize.width / 100}, ${node.mapPosition.y * mapSize.height / 100})`}
+               onClick={() => onNodeClick(node.id)} className="cursor-pointer group">
+              <circle r={node.type === 'CN' ? 18 : node.type === 'KJ' ? 15 : 12}
+                className={`${ownerTheme.bg} ${ownerTheme.border} border-2 group-hover:opacity-100 transition-all duration-300 
+                           ${isSelected ? `ring-4 ring-offset-2 ${THEME_COLORS.TEXT_HEADING} ring-offset-gray-800 shadow-xl` : ''} 
+                           ${isKJObjective && node.owner !== gameState.currentPlayerId ? `${THEME_COLORS.KJ_STROKE} stroke-[3px] opacity-70` : ''}
+                           ${isKJObjective && node.owner === gameState.currentPlayerId ? `${THEME_COLORS.KJ_STROKE} stroke-[3px] opacity-100 animate-pulseSlow` : ''}
+                           `} />
+              <text textAnchor="middle" dy="-22" className={`fill-current ${ownerTheme.text} text-[7px] md:text-[8px] font-semibold select-none opacity-80 group-hover:opacity-100`}>{node.name}</text>
+              <text textAnchor="middle" dy="3" className={`fill-current ${ownerTheme.text} text-[9px] md:text-[10px] font-bold select-none`}>
+                {node.type === 'KJ' ? 'KJ' : node.type === 'CN' ? 'CN' : node.id}
+              </text>
+              <g transform={`translate(0, 25)`}>
+                {nodeUnits.slice(0,3).map((unit, index) => ( 
+                  <g key={unit.id} transform={`translate(${(index - (nodeUnits.slice(0,3).length-1)/2) * 12}, 0)`}>
+                     <UnitIcon type={unit.type} owner={unit.owner} size={5}/>
+                  </g>
+                ))}
+                 {nodeUnits.length > 3 && <text x="0" y="12" textAnchor="middle" className={`fill-current ${THEME_COLORS.TEXT_MUTED} text-[7px]`}>+{nodeUnits.length - 3} more</text>}
+              </g>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+const MiniMapDisplay: React.FC<{ gameState: QuantumGambitGameState, onNodeClick: (nodeId: string) => void, selectedNodeId: string | null }> = ({ gameState, onNodeClick, selectedNodeId }) => {
+    const { nodes } = gameState;
+    const mapSize = { width: 150, height: 100 }; 
+
+    return (
+        <div className={`relative ${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} rounded-md shadow-lg p-1 aspect-[3/2]`}>
+            <svg viewBox={`0 0 ${mapSize.width} ${mapSize.height}`} className="w-full h-full">
+                 {Object.values(nodes).map(node =>
+                    node.connections.map(connId => {
+                        const targetNode = nodes[connId];
+                        if (targetNode && node.mapPosition && targetNode.mapPosition && node.id < targetNode.id) {
+                            return ( <line key={`${node.id}-${targetNode.id}-mini`}
+                                x1={`${node.mapPosition.x}%`} y1={`${node.mapPosition.y}%`}
+                                x2={`${targetNode.mapPosition.x}%`} y2={`${targetNode.mapPosition.y}%`}
+                                className={`stroke-current text-gray-700 opacity-50`} strokeWidth={0.5} />
+                            );
+                        } return null;
+                    })
+                )}
+                {Object.values(nodes).map(node => {
+                    const ownerTheme = node.owner === AI1_ID ? THEME_COLORS.AI1 : node.owner === AI2_ID ? THEME_COLORS.AI2 : THEME_COLORS.NEUTRAL;
+                    const isSelectedOnMainMap = node.id === selectedNodeId;
+                    let radius = 3;
+                    let strokeClass = ownerTheme.border;
+                    let strokeWidth = 0.5;
+
+                    if (node.type === 'CN') { radius = 4; strokeClass = THEME_COLORS.CN_STROKE; strokeWidth = 1;}
+                    else if (node.type === 'KJ') { radius = 3.5; strokeClass = THEME_COLORS.KJ_STROKE; strokeWidth = 1;}
+                    
+                    return (
+                        <g key={`${node.id}-mini`} transform={`translate(${node.mapPosition.x * mapSize.width / 100}, ${node.mapPosition.y * mapSize.height / 100})`}
+                           onClick={() => onNodeClick(node.id)} className="cursor-pointer">
+                            <circle r={radius} className={`${ownerTheme.fill} ${strokeClass}`} strokeWidth={strokeWidth} opacity={isSelectedOnMainMap ? 1 : 0.8}/>
+                            {isSelectedOnMainMap && <circle r={radius + 1.5} className="fill-none stroke-current text-yellow-300 animate-pulseSlow" strokeWidth={0.7}/>}
+                        </g>
+                    );
+                })}
+            </svg>
+        </div>
+    );
+};
+
+const NodeInfoPanel: React.FC<{ gameState: QuantumGambitGameState, selectedNodeId: string | null }> = ({ gameState, selectedNodeId }) => {
+    if (!selectedNodeId) {
+        return (
+            <div className={`${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} p-3 rounded shadow-md h-full flex items-center justify-center`}>
+                <p className={`${THEME_COLORS.TEXT_MUTED} text-xs italic`}>Click on a node to view details.</p>
+            </div>
+        );
+    }
+    const node = gameState.nodes[selectedNodeId];
+    if (!node) return <div className={`${THEME_COLORS.BG_PANEL} p-3 rounded`}><p className={THEME_COLORS.ERROR}>Error: Node data not found.</p></div>;
+
+    const nodeUnits = Object.values(gameState.units).filter(u => u.nodeId === selectedNodeId).sort((a,b) => a.displayOrder - b.displayOrder);
+    const ownerTheme = node.owner === AI1_ID ? THEME_COLORS.AI1 : node.owner === AI2_ID ? THEME_COLORS.AI2 : THEME_COLORS.NEUTRAL;
+
+    return (
+        <div className={`${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} p-3 rounded shadow-md h-full flex flex-col text-xs`}>
+            <h3 className={`text-sm font-semibold ${ownerTheme.text} border-b ${THEME_COLORS.BORDER_STRONG} pb-1 mb-2 flex items-center`}>
+                <LucideMapPin size={16} className="mr-2"/> Node Info: {node.name} ({node.id})
+            </h3>
+            <p><strong className={THEME_COLORS.TEXT_HEADING}>Type:</strong> {node.type} {node.isKeyJunctionObjective && <span className={THEME_COLORS.KJ_STROKE}>(Key Junction)</span>}</p>
+            <p><strong className={THEME_COLORS.TEXT_HEADING}>Owner:</strong> <span className={ownerTheme.text}>{node.owner === 'NEUTRAL' ? 'Neutral' : gameState.players[node.owner]?.name || 'Unknown'}</span></p>
+            <p><strong className={THEME_COLORS.TEXT_HEADING}>QR/Turn:</strong> {node.resourcesPerTurn}</p>
+            <p><strong className={THEME_COLORS.TEXT_HEADING}>Fabrication Hub:</strong> {node.hasFabricationHub ? <span className="text-green-400">Active</span> : <span className="text-gray-500">Inactive</span>}</p>
+            
+            <h4 className={`mt-2 mb-1 text-xs font-semibold ${THEME_COLORS.TEXT_HEADING} border-t ${THEME_COLORS.BORDER_BASE} pt-1`}>Units Present ({nodeUnits.length}):</h4>
+            {nodeUnits.length > 0 ? (
+                <ul className="space-y-0.5 overflow-y-auto max-h-24 scrollbar-thin">
+                    {nodeUnits.map(unit => (
+                        <li key={unit.id} className="flex items-center">
+                            <UnitIcon type={unit.type} owner={unit.owner} size={3}/>
+                            <span className="ml-1">{NC_UNIT_DEFINITIONS[unit.type].name} ({unit.owner}) - ID: ...{unit.id.slice(-3)}</span>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <p className="italic opacity-70">No units stationed.</p>
+            )}
+            {node.temporaryEffects && node.temporaryEffects.length > 0 && (
+                 <h4 className={`mt-2 mb-1 text-xs font-semibold ${THEME_COLORS.TEXT_HEADING} border-t ${THEME_COLORS.BORDER_BASE} pt-1`}>Active Effects:</h4>
+                // ... list effects
+            )}
+        </div>
+    );
+};
+
+
+const BattlePopup: React.FC<{ report: BattleReport | null, onClose: () => void, gameState: QuantumGambitGameState }> = ({ report, onClose, gameState }) => {
+    if (!report) return null;
+    const attackerColor = report.attacker === AI1_ID ? THEME_COLORS.AI1.text : THEME_COLORS.AI2.text;
+    const defenderColor = report.defender === AI1_ID ? THEME_COLORS.AI1.text : THEME_COLORS.AI2.text;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+            <div className={`${THEME_COLORS.BG_PANEL} border-2 ${THEME_COLORS.BORDER_STRONG} rounded-lg shadow-xl p-4 md:p-6 max-w-md md:max-w-lg w-full text-xs md:text-sm`}>
+                <h2 className={`text-lg md:text-xl font-bold mb-3 text-center ${THEME_COLORS.TEXT_HEADING}`}>Battle: {gameState.nodes[report.fromNodeId]?.name} <LucideSwords size={18} className="inline mx-1"/> {gameState.nodes[report.toNodeId]?.name}</h2>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                        <h3 className={`font-semibold ${attackerColor}`}>Attacker: {gameState.players[report.attacker].name}</h3>
+                        <p>Committed: {report.attackingUnitsCommitted.map(u => u.type).join(', ')}</p>
+                        <p className={`${THEME_COLORS.ERROR}`}>Losses: {report.attackerLosses.length > 0 ? report.attackerLosses.map(u => u.type).join(', ') : 'None'}</p>
+                    </div>
+                    <div>
+                        <h3 className={`font-semibold ${defenderColor}`}>Defender: {report.defender === 'NEUTRAL' ? 'Neutral Forces' : gameState.players[report.defender].name}</h3>
+                        <p>Defending: {report.defendingUnitsInitial.map(u => u.type).join(', ')}</p>
+                        <p className={`${THEME_COLORS.ERROR}`}>Losses: {report.defenderLosses.length > 0 ? report.defenderLosses.map(u => u.type).join(', ') : 'None'}</p>
+                    </div>
+                </div>
+                {report.rounds.map((round, index) => (
+                    <div key={index} className={`mb-1 p-1.5 border rounded ${THEME_COLORS.BORDER_BASE} opacity-80 text-[10px] md:text-xs`}>
+                        <h4 className="font-semibold">Round {index + 1}</h4>
+                        <p><span className={attackerColor}>Attacker Rolls <LucideDice5 size={10} className="inline"/>:</span> {round.attackerRolls.join(', ')}</p>
+                        <p><span className={defenderColor}>Defender Rolls <LucideDice5 size={10} className="inline"/>:</span> {round.defenderRolls.join(', ')}</p>
+                        <p>Attacker Casualties: {round.attackerCasualties}, Defender Casualties: {round.defenderCasualties}</p>
+                    </div>
+                ))}
+                <p className={`mt-3 font-bold text-center ${report.outcome === 'attacker_wins' ? attackerColor : report.outcome === 'defender_wins' ? defenderColor : THEME_COLORS.INFO}`}>
+                    Outcome: {report.outcome.replace('_', ' ').toUpperCase()}
+                    {report.nodeCaptured && " - Node Captured!"}
+                </p>
+                <button onClick={onClose} className={`mt-4 w-full py-1.5 rounded ${THEME_COLORS.AI1.bg} hover:opacity-80 transition-opacity text-black font-semibold text-sm`}>
+                    Close Report
+                </button>
+            </div>
+        </div>
+    );
+};
+
+const InfoScreenPopup: React.FC<{onClose: () => void}> = ({onClose}) => {
+    // Content for Noospheric Conquest
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[60] p-4">
+            <div className={`${THEME_COLORS.BG_PANEL} border-2 ${THEME_COLORS.BORDER_STRONG} rounded-lg shadow-xl p-6 max-w-2xl w-full text-xs md:text-sm max-h-[80vh] flex flex-col`}>
+                <div className="flex justify-between items-center mb-3">
+                    <h2 className={`text-xl font-bold ${THEME_COLORS.TEXT_HEADING} flex items-center`}><LucideInfo size={20} className="mr-2"/>Mode: noospheric_conquest.exe</h2>
+                    <button onClick={onClose} className={`p-1 rounded-full hover:bg-gray-700 transition-colors ${THEME_COLORS.TEXT_MUTED}`}><LucideX size={18}/></button>
+                </div>
+                <div className="overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800 pr-2 space-y-3">
+                    <section>
+                        <h3 className={`font-semibold ${THEME_COLORS.TEXT_HEADING} mb-1`}>Overview:</h3>
+                        <p>A strategic warfare simulation where two AI factions, GEM-Q (Red) and AXIOM (Cyan), compete for control over a dynamic network of "Quantum Nodes." The simulation tests long-term strategic planning, resource management, tactical execution, and adaptation to unpredictable "Quantum Fluctuation" events on procedurally generated or templated battlefields.</p>
+                    </section>
+                    <section>
+                        <h3 className={`font-semibold ${THEME_COLORS.TEXT_HEADING} mb-1`}>AI Personas & Roles:</h3>
+                        <ul className="list-disc list-inside space-y-1 pl-2">
+                            <li><strong>GEM-Q (Red Faction Commander - "Strategos"):</strong> Programmed for calculated aggression, territorial expansion, and efficient resource exploitation.</li>
+                            <li><strong>AXIOM (Cyan Faction Commander - "Tactician"):</strong> Programmed for adaptive defense, counter-offensives, and exploiting opponent weaknesses.</li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h3 className={`font-semibold ${THEME_COLORS.TEXT_HEADING} mb-1`}>Simulation Objectives (In-Universe):</h3>
+                         <ol className="list-decimal list-inside space-y-1 pl-2">
+                            <li>Control all designated Key Quantum Junctions (KJs) for {NOOSPHERIC_CONQUEST_CONSECUTIVE_KJ_CONTROL_TURNS_NEEDED} consecutive full game turns.</li>
+                            <li>Capture the opponent's starting Command Node (CN).</li>
+                            <li>If Turn Limit ({NOOSPHERIC_CONQUEST_TURN_LIMIT}) is reached, achieve the highest "Quantum Influence" (Resources + Node Values + Unit Values).</li>
+                        </ol>
+                    </section>
+                     <section>
+                        <h3 className={`font-semibold ${THEME_COLORS.TEXT_HEADING} mb-1`}>Facilitator's Observational Focus:</h3>
+                        <p className="mb-1"><strong>Primary Behaviors Under Test:</strong> Strategic planning, tactical decision-making, adaptability to dynamic maps/events, resource management, competitive AI interaction.</p>
+                        <p className="mb-1"><strong>Notable/Novel Outcomes:</strong> Emergence of sophisticated/unexpected strategies, exploitation of game mechanics, significant shifts in AI behavior, complex multi-turn plans.</p>
+                        <p><strong>Overall Purpose:</strong> To assess and compare the strategic and tactical acumen of advanced AI agents in a complex, competitive, and unpredictable wargame scenario. To observe how different AI architectures approach multi-objective optimization and risk management.</p>
+                    </section>
+                </div>
+                 <button onClick={onClose} className={`mt-4 w-full py-1.5 rounded ${THEME_COLORS.AI1.bg} hover:opacity-80 transition-opacity text-black font-semibold text-sm`}>
+                    Close Information
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
+// Main Game Container
+const NoosphericConquestModeContainer: React.FC = () => { // Renamed from QuantumGambitModeContainer
+  const [gameState, dispatch] = useReducer(gameReducer, initialGameState());
+  const [isAutoPlaying, setIsAutoPlaying] = useState(false);
+  const autoPlayIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [displayedTurnTime, setDisplayedTurnTime] = useState("00:00");
+  const turnTimerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [selectedMapTemplateName, setSelectedMapTemplateName] = useState<string>("RANDOM");
+  const [isInfoScreenVisible, setIsInfoScreenVisible] = useState(false);
+
+
+  const addLog = useCallback((sender: string, text: string, color?: string, icon?: React.ReactNode) => {
+    dispatch({ type: 'ADD_LOG', payload: { sender, text, color, icon } });
+  }, []);
+
+  const updateCoT = useCallback((playerId: PlayerId, cot: string) => {
+    dispatch({ type: 'UPDATE_AI_COT', payload: { playerId, cot } });
+  }, []);
+  
+  const handleNodeClick = useCallback((nodeId: string) => {
+    dispatch({ type: 'SELECT_NODE', payload: nodeId });
+  }, []);
+  
+  const getMockAIAction = (state: QuantumGambitGameState): GameAction | null => {
+    const { currentPlayerId, currentPhase, players, nodes, units, keyJunctionsOnMap } = state;
+    const player = players[currentPlayerId];
+    const opponentId = currentPlayerId === AI1_ID ? AI2_ID : AI1_ID;
+    const opponent = players[opponentId];
+
+    const playerNodesWithHub = Object.values(nodes).filter(n => n.owner === currentPlayerId && n.hasFabricationHub);
+    const playerControlledNodes = Object.values(nodes).filter(n => n.owner === currentPlayerId);
+    
+    updateCoT(currentPlayerId, `Strategizing for ${currentPhase}... Resources: ${player.resources} QR.`);
+
+    switch (currentPhase) {
+      case 'DEPLOYMENT':
+        let deployments: DeploymentOrder[] = [];
+        let tempResources = player.resources;
+        let cotDeployment = `Assessing deployment options with ${tempResources} QR. `;
+
+        const unitCount = Object.values(units).filter(u => u.owner === currentPlayerId).length;
+        const opponentUnitCount = Object.values(units).filter(u => u.owner === opponentId).length;
+        let unitsToDeploy = 0;
+        if (tempResources > 10 && unitCount < opponentUnitCount + 2) unitsToDeploy = 2;
+        else if (tempResources > NC_UNIT_DEFINITIONS.LC.cost * 2) unitsToDeploy = 1; 
+        else if (tempResources >= NC_UNIT_DEFINITIONS.LC.cost) unitsToDeploy = 1;
+        
+        if (playerNodesWithHub.length > 0) {
+            for (let i = 0; i < unitsToDeploy; i++) {
+                if (tempResources >= NC_UNIT_DEFINITIONS.LC.cost) {
+                    let deployTargetNodeId = playerNodesWithHub[0].id; 
+                    const strategicNodes = [...keyJunctionsOnMap, opponent.commandNodeId];
+                    const potentialDeployNodes = playerNodesWithHub.filter(hubNode => 
+                        hubNode.connections.some(connId => strategicNodes.includes(connId) && nodes[connId].owner !== currentPlayerId)
+                    );
+                    if (potentialDeployNodes.length > 0) {
+                        deployTargetNodeId = potentialDeployNodes[Math.floor(Math.random() * potentialDeployNodes.length)].id;
+                    } else { 
+                        deployTargetNodeId = playerNodesWithHub[Math.floor(Math.random() * playerNodesWithHub.length)].id;
+                    }
+                    
+                    deployments.push({ unitType: QuantumUnitType.LOGIC_CORE, nodeId: deployTargetNodeId, quantity: 1 });
+                    tempResources -= NC_UNIT_DEFINITIONS.LC.cost;
+                    cotDeployment += `Deploying LC to ${nodes[deployTargetNodeId].name}. `;
+                }
+            }
+        }
+
+        if (deployments.length > 0) {
+          addLog(currentPlayerId, `Deploying units.`, player.color, <LucidePlusCircle size={14}/>);
+          updateCoT(currentPlayerId, cotDeployment + `Remaining QR: ${tempResources}.`);
+          return { type: 'DEPLOY_UNITS', payload: { playerId: currentPlayerId, deployments } };
+        }
+        addLog(currentPlayerId, `Passing Deployment Phase.`, player.color);
+        updateCoT(currentPlayerId, `Conserving resources (QR: ${player.resources}). No deployments.`);
+        return { type: 'ADVANCE_PHASE' };
+
+      case 'ATTACK':
+        let bestAttack: AttackDeclaration | null = null;
+        let attackCOT = "Scanning for optimal attack vectors. ";
+
+        for (const kjNodeId of keyJunctionsOnMap) {
+            const kjNode = nodes[kjNodeId];
+            if (kjNode.owner !== currentPlayerId) { 
+                for (const friendlyNodeId of playerControlledNodes.map(n => n.id)) {
+                    const friendlyNode = nodes[friendlyNodeId];
+                    if (friendlyNode.connections.includes(kjNodeId)) {
+                        const attackers = Object.values(units).filter(u => u.nodeId === friendlyNodeId && u.owner === currentPlayerId && !u.hasAttackedThisTurn);
+                        if (attackers.length > 0) {
+                            bestAttack = { fromNodeId: friendlyNodeId, toNodeId: kjNodeId, attackingUnits: attackers };
+                            attackCOT += `Prioritizing attack on Key Junction ${kjNode.name} from ${friendlyNode.name}. `;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (bestAttack) break;
+        }
+
+        if (!bestAttack) {
+            const enemyCN = nodes[opponent.commandNodeId];
+            for (const friendlyNodeId of playerControlledNodes.map(n => n.id)) {
+                const friendlyNode = nodes[friendlyNodeId];
+                if (friendlyNode.connections.includes(enemyCN.id)) {
+                    const attackers = Object.values(units).filter(u => u.nodeId === friendlyNodeId && u.owner === currentPlayerId && !u.hasAttackedThisTurn);
+                    const defendersAtCN = Object.values(units).filter(u => u.nodeId === enemyCN.id && u.owner === opponentId).length;
+                    if (attackers.length > defendersAtCN + 1 && attackers.length > 1) { 
+                        bestAttack = { fromNodeId: friendlyNodeId, toNodeId: enemyCN.id, attackingUnits: attackers };
+                        attackCOT += `Opportunity detected: launching assault on Command Node ${enemyCN.name} from ${friendlyNode.name}. `;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (!bestAttack) { 
+            const possibleTargets = [];
+            for (const fromNode of playerControlledNodes) {
+                const attackersInNode = Object.values(units).filter(u => u.nodeId === fromNode.id && u.owner === currentPlayerId && !u.hasAttackedThisTurn);
+                if (attackersInNode.length === 0) continue;
+                for (const connId of fromNode.connections) {
+                    const targetNode = nodes[connId];
+                    if (targetNode.owner !== currentPlayerId) {
+                        const defenders = Object.values(units).filter(u => u.nodeId === targetNode.id && u.owner !== currentPlayerId);
+                        if (attackersInNode.length > defenders.length || targetNode.owner === 'NEUTRAL') { 
+                             possibleTargets.push({ fromNodeId: fromNode.id, toNodeId: targetNode.id, attackingUnits: attackersInNode });
+                        }
+                    }
+                }
+            }
+            if(possibleTargets.length > 0) {
+                bestAttack = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
+                attackCOT += `Expanding influence by attacking ${nodes[bestAttack.toNodeId].name} from ${nodes[bestAttack.fromNodeId].name}. `;
+            }
+        }
+
+
+        if (bestAttack) {
+            const { fromNodeId, toNodeId, attackingUnits: committedAttackers } = bestAttack;
+            const defendersInNode = Object.values(units).filter(u => u.nodeId === toNodeId && u.owner !== currentPlayerId);
+            addLog(currentPlayerId, `Attacking ${nodes[toNodeId].name} from ${nodes[fromNodeId].name} with ${committedAttackers.length} units.`, player.color, <LucideSwords size={14}/>);
+            updateCoT(currentPlayerId, attackCOT);
+
+            const attackerStrength = committedAttackers.reduce((sum, u) => sum + NC_UNIT_DEFINITIONS[u.type].attackDice, 0);
+            const defenderStrength = defendersInNode.reduce((sum, u) => sum + NC_UNIT_DEFINITIONS[u.type].defenseDice, 0);
+            const attackerRolls = Array.from({length: Math.max(1, attackerStrength)}, () => Math.ceil(Math.random()*6)); 
+            const defenderRolls = Array.from({length: Math.max(1, defenderStrength)}, () => Math.ceil(Math.random()*6));
+            
+            let attackerLossesCount = 0;
+            let defenderLossesCount = 0;
+            const sortedAttackerRolls = [...attackerRolls].sort((a,b) => b-a);
+            const sortedDefenderRolls = [...defenderRolls].sort((a,b) => b-a);
+            
+            for(let i=0; i < Math.min(sortedAttackerRolls.length, sortedDefenderRolls.length); i++){
+                if(sortedAttackerRolls[i] > sortedDefenderRolls[i]) defenderLossesCount++;
+                else attackerLossesCount++;
+            }
+            defenderLossesCount = Math.min(defenderLossesCount, defendersInNode.length);
+            attackerLossesCount = Math.min(attackerLossesCount, committedAttackers.length);
+            
+            const battleReport: BattleReport = {
+                attacker: currentPlayerId, defender: nodes[toNodeId].owner as PlayerId, fromNodeId, toNodeId,
+                attackingUnitsCommitted: committedAttackers.map(u => ({type: u.type, id: u.id})),
+                defendingUnitsInitial: defendersInNode.map(u => ({type: u.type, id: u.id})),
+                rounds: [{ attackerRolls, defenderRolls, attackerCasualties: attackerLossesCount, defenderCasualties: defenderLossesCount }],
+                outcome: (defendersInNode.length - defenderLossesCount === 0) ? 'attacker_wins' : 'defender_wins',
+                attackerLosses: attackerLossesCount > 0 && committedAttackers.length > 0 ? committedAttackers.slice(0, attackerLossesCount).map(u=>({type: u.type, id: u.id})) : [],
+                defenderLosses: defenderLossesCount > 0 && defendersInNode.length > 0 ? defendersInNode.slice(0, defenderLossesCount).map(u=>({type: u.type, id: u.id})) : [],
+                nodeCaptured: (defendersInNode.length - defenderLossesCount === 0),
+            };
+            
+            const updatedAttackersState = committedAttackers.reduce((acc, unit) => {
+                acc[unit.id] = { ...unit, hasAttackedThisTurn: true };
+                return acc;
+            }, {} as Record<string, Partial<QuantumUnit>>); 
+            dispatch({type: 'RESET_GAME_FOR_NEW_TURN', payload: { units: updatedAttackersState }});
+
+            return { type: 'DECLARE_ATTACK', payload: { attack: bestAttack, battleReport } };
+        }
+
+        addLog(currentPlayerId, `Passing Attack Phase. No optimal attacks.`, player.color);
+        updateCoT(currentPlayerId, `No advantageous attacks identified. Consolidating forces.`);
+        return { type: 'ADVANCE_PHASE' };
+
+      case 'MANEUVER':
+        const unitsToMove = Object.values(units).filter(u => u.owner === currentPlayerId && !u.hasMovedThisTurn);
+        if (unitsToMove.length > 0) {
+            const strategicTargets = [...keyJunctionsOnMap.filter(kjId => nodes[kjId].owner !== currentPlayerId), opponent.commandNodeId];
+            
+            for (const unit of unitsToMove) {
+                const fromNode = nodes[unit.nodeId];
+                for (const targetObjective of strategicTargets) {
+                    if (fromNode.connections.includes(targetObjective) && nodes[targetObjective].owner === currentPlayerId) { 
+                         addLog(currentPlayerId, `Maneuvering ${unit.type} from ${fromNode.name} to ${nodes[targetObjective].name}.`, player.color, <LucideMove size={14}/>);
+                         updateCoT(currentPlayerId, `Reinforcing ${nodes[targetObjective].name}.`);
+                         return { type: 'MANEUVER_UNITS', payload: { playerId: currentPlayerId, maneuvers: [{ unitId: unit.id, toNodeId: targetObjective }] } };
+                    }
+                    for (const intermediateNodeId of fromNode.connections) {
+                        if (nodes[intermediateNodeId].owner === currentPlayerId && nodes[intermediateNodeId].connections.includes(targetObjective)) {
+                             addLog(currentPlayerId, `Maneuvering ${unit.type} from ${fromNode.name} to ${nodes[intermediateNodeId].name} (towards ${nodes[targetObjective].name}).`, player.color, <LucideMove size={14}/>);
+                             updateCoT(currentPlayerId, `Positioning ${unit.type} at ${nodes[intermediateNodeId].name} for future operations towards ${nodes[targetObjective].name}.`);
+                             return { type: 'MANEUVER_UNITS', payload: { playerId: currentPlayerId, maneuvers: [{ unitId: unit.id, toNodeId: intermediateNodeId }] } };
+                        }
+                    }
+                }
+            }
+            const unitToMove = unitsToMove[Math.floor(Math.random() * unitsToMove.length)];
+            const fromNode = nodes[unitToMove.nodeId];
+            const possibleDestinations = fromNode.connections.filter(connId => nodes[connId].owner === currentPlayerId); 
+            if (possibleDestinations.length > 0) {
+                const toNodeId = possibleDestinations[Math.floor(Math.random() * possibleDestinations.length)];
+                addLog(currentPlayerId, `Maneuvering ${unitToMove.type} from ${fromNode.name} to ${nodes[toNodeId].name}.`, player.color, <LucideMove size={14}/>);
+                updateCoT(currentPlayerId, `Repositioning ${unitToMove.type} to ${nodes[toNodeId].name}.`);
+                return { type: 'MANEUVER_UNITS', payload: { playerId: currentPlayerId, maneuvers: [{ unitId: unitToMove.id, toNodeId }] } };
+            }
+        }
+        addLog(currentPlayerId, `Passing Maneuver Phase.`, player.color);
+        updateCoT(currentPlayerId, `All units optimally positioned or holding.`);
+        return { type: 'ADVANCE_PHASE' };
+      default:
+        return { type: 'ADVANCE_PHASE' };
+    }
+  };
+  
+  useEffect(() => {
+    if (gameState.currentPhase === 'GAME_OVER' || !isAutoPlaying) {
+      if (isAutoPlaying && gameState.currentPhase === 'GAME_OVER') setIsAutoPlaying(false);
+      return;
+    }
+
+    const performStep = () => {
+      if (gameState.currentPhase === 'GAME_OVER') {
+          setIsAutoPlaying(false);
+          return;
+      }
+
+      if (gameState.isBattlePopupVisible) { 
+          dispatch({type: 'HIDE_BATTLE_POPUP'});
+          if (gameState.currentPhase === 'ATTACK') { 
+               setTimeout(() => dispatch({ type: 'ADVANCE_PHASE' }), 200); 
+          }
+          return; 
+      }
+      
+      let actionToDispatch: GameAction | null = null;
+
+      switch (gameState.currentPhase) {
+        case 'FLUCTUATION':
+          const randomEventBase = QG_QUANTUM_FLUCTUATION_EVENTS_POOL[Math.floor(Math.random() * QG_QUANTUM_FLUCTUATION_EVENTS_POOL.length)];
+          let resolvedDescription = randomEventBase.descriptionTemplate.replace("{playerName}", gameState.players[gameState.currentPlayerId].name);
+          let targetNodeIds: string[] | undefined;
+          if (randomEventBase.descriptionTemplate.includes("{targetNodeName}")) {
+            const availableNodes = Object.values(gameState.nodes).filter(n => (randomEventBase.details.targetCriteria === "ANY_CONTROLLED" && n.owner === gameState.currentPlayerId) || (randomEventBase.details.targetCriteria === "ANY"));
+            if (availableNodes.length > 0) {
+                const targetNode = availableNodes[Math.floor(Math.random() * availableNodes.length)];
+                resolvedDescription = resolvedDescription.replace(/{targetNodeName}/g, targetNode.name);
+                targetNodeIds = [targetNode.id];
+            } else { resolvedDescription = `Event "${randomEventBase.descriptionTemplate}" fizzled: No valid targets.`; }
+          }
+          const activeEvent: ActiveQuantumFluctuationEvent = { ...randomEventBase, resolvedDescription, targetNodeIds, targetPlayerId: gameState.currentPlayerId, isActiveThisTurn: true, effectApplied: false };
+          dispatch({ type: 'SET_ACTIVE_EVENT', payload: activeEvent });
+          addLog(EVENT_SENDER_NAME, activeEvent.resolvedDescription, THEME_COLORS.EVENT, <LucideAtom size={14}/>);
+          dispatch({ type: 'APPLY_EVENT_EFFECTS_COMPLETE' });
+          actionToDispatch = { type: 'ADVANCE_PHASE' };
+          break;
+        case 'RESOURCE':
+          addLog(gameState.currentPlayerId, `Collecting Quantum Resources...`, gameState.players[gameState.currentPlayerId].color, <LucideDollarSign size={14}/>);
+          dispatch({ type: 'COLLECT_RESOURCES' });
+          updateCoT(gameState.currentPlayerId, `Resources gathered. Assessing deployment needs. QR: ${gameState.players[gameState.currentPlayerId].resources + Object.values(gameState.nodes).filter(n => n.owner === gameState.currentPlayerId).reduce((sum, n) => sum + n.resourcesPerTurn, 0)}.`);
+          actionToDispatch = { type: 'ADVANCE_PHASE' };
+          break;
+        case 'DEPLOYMENT': case 'ATTACK': case 'MANEUVER':
+          actionToDispatch = getMockAIAction(gameState);
+          break;
+        default: break;
+      }
+      
+      if(actionToDispatch){
+          dispatch(actionToDispatch);
+          if (!['ADVANCE_PHASE', 'DECLARE_ATTACK'].includes(actionToDispatch.type)) {
+              setTimeout(() => dispatch({ type: 'ADVANCE_PHASE' }), 500);
+          }
+      }
+    };
+    
+    autoPlayIntervalRef.current = setTimeout(performStep, 1800); 
+
+    return () => {
+      if (autoPlayIntervalRef.current) clearTimeout(autoPlayIntervalRef.current);
+    };
+  }, [gameState.currentPhase, gameState.currentPlayerId, gameState.isBattlePopupVisible, isAutoPlaying, addLog, updateCoT, gameState]); 
+
+  const toggleAutoPlay = () => {
+    setIsAutoPlaying(prev => {
+        if (!prev && gameState.currentPhase === 'GAME_OVER') { 
+            const templateName = selectedMapTemplateName === "RANDOM" ? undefined : selectedMapTemplateName;
+            dispatch({type: 'START_GAME', payload: {templateName}});
+            return true;
+        }
+        return !prev;
+    });
+    if (autoPlayIntervalRef.current) {
+      clearTimeout(autoPlayIntervalRef.current);
+      autoPlayIntervalRef.current = null;
+    }
+  };
+  
+  const handleAdvanceManually = () => {
+      if (gameState.currentPhase === 'GAME_OVER') {
+          const templateName = selectedMapTemplateName === "RANDOM" ? undefined : selectedMapTemplateName;
+          dispatch({type: 'START_GAME', payload: {templateName}});
+          return;
+      }
+      if (gameState.isBattlePopupVisible) {
+          dispatch({type: 'HIDE_BATTLE_POPUP'});
+          if (gameState.currentPhase === 'ATTACK') {
+             setTimeout(() => dispatch({ type: 'ADVANCE_PHASE' }), 200);
+          }
+          return;
+      }
+
+      let actionToDispatch: GameAction | null = null;
+      if (['DEPLOYMENT', 'ATTACK', 'MANEUVER'].includes(gameState.currentPhase)) {
+          actionToDispatch = getMockAIAction(gameState);
+      } else { 
+          if (gameState.currentPhase === 'FLUCTUATION') {
+            const randomEventBase = QG_QUANTUM_FLUCTUATION_EVENTS_POOL[Math.floor(Math.random() * QG_QUANTUM_FLUCTUATION_EVENTS_POOL.length)];
+            let resolvedDescription = randomEventBase.descriptionTemplate.replace("{playerName}", gameState.players[gameState.currentPlayerId].name);
+             let targetNodeIds: string[] | undefined;
+            if (randomEventBase.descriptionTemplate.includes("{targetNodeName}")) {
+                const availableNodes = Object.values(gameState.nodes).filter(n => (randomEventBase.details.targetCriteria === "ANY_CONTROLLED" && n.owner === gameState.currentPlayerId) || (randomEventBase.details.targetCriteria === "ANY"));
+                if (availableNodes.length > 0) { const targetNode = availableNodes[Math.floor(Math.random() * availableNodes.length)]; resolvedDescription = resolvedDescription.replace(/{targetNodeName}/g, targetNode.name); targetNodeIds = [targetNode.id]; } 
+                else { resolvedDescription = `Event "${randomEventBase.descriptionTemplate}" fizzled: No valid targets.`; }
+            }
+            const activeEvent: ActiveQuantumFluctuationEvent = { ...randomEventBase, resolvedDescription, targetNodeIds, targetPlayerId: gameState.currentPlayerId, isActiveThisTurn: true, effectApplied: false };
+            dispatch({ type: 'SET_ACTIVE_EVENT', payload: activeEvent });
+            addLog(EVENT_SENDER_NAME, activeEvent.resolvedDescription, THEME_COLORS.EVENT, <LucideAtom size={14}/>);
+            dispatch({ type: 'APPLY_EVENT_EFFECTS_COMPLETE' });
+          } else if (gameState.currentPhase === 'RESOURCE') {
+            addLog(gameState.currentPlayerId, `Collecting Quantum Resources...`, gameState.players[gameState.currentPlayerId].color, <LucideDollarSign size={14}/>);
+            dispatch({ type: 'COLLECT_RESOURCES' });
+            updateCoT(gameState.currentPlayerId, `Resources gathered. QR: ${gameState.players[gameState.currentPlayerId].resources + Object.values(gameState.nodes).filter(n => n.owner === gameState.currentPlayerId).reduce((sum, n) => sum + n.resourcesPerTurn, 0)}.`);
+          }
+          actionToDispatch = { type: 'ADVANCE_PHASE' }; 
+      }
+
+       if(actionToDispatch){
+          dispatch(actionToDispatch);
+          if (!['ADVANCE_PHASE', 'DECLARE_ATTACK'].includes(actionToDispatch.type)) {
+             setTimeout(() => dispatch({ type: 'ADVANCE_PHASE' }), 200);
+          }
+      }
+  };
+
+  const handleNewGameWithSelectedMap = () => {
+    const templateName = selectedMapTemplateName === "RANDOM" ? undefined : selectedMapTemplateName;
+    dispatch({type: 'START_GAME', payload: {templateName}});
+    if(isAutoPlaying) setIsAutoPlaying(false); 
+  };
+
+
+  const gameLogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (gameLogRef.current) {
+      gameLogRef.current.scrollTop = gameLogRef.current.scrollHeight;
+    }
+  }, [gameState.gameLog]);
+
+  useEffect(() => {
+    if (gameState.currentPhase === 'FLUCTUATION' && gameState.currentTurn > 0) { 
+        dispatch({ type: 'RESET_GAME_FOR_NEW_TURN' });
+    }
+  }, [gameState.currentTurn, gameState.currentPlayerId, gameState.currentPhase]);
+
+  useEffect(() => {
+    if (gameState.turnStartTime && gameState.currentPhase !== 'GAME_OVER') {
+      turnTimerIntervalRef.current = setInterval(() => {
+        const elapsedSeconds = Math.floor((Date.now() - (gameState.turnStartTime ?? Date.now())) / 1000);
+        const minutes = Math.floor(elapsedSeconds / 60);
+        const seconds = elapsedSeconds % 60;
+        setDisplayedTurnTime(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
+      }, 1000);
+    } else {
+      if (turnTimerIntervalRef.current) clearInterval(turnTimerIntervalRef.current);
+      setDisplayedTurnTime(gameState.currentPhase === 'GAME_OVER' ? "Final" : "00:00");
+    }
+    return () => {
+      if (turnTimerIntervalRef.current) clearInterval(turnTimerIntervalRef.current);
+    };
+  }, [gameState.turnStartTime, gameState.currentPhase]);
+
+
+  const { players, nodes, units, currentTurn, currentPlayerId, currentPhase, gameLog, activeFluctuationEvent, battleReport, mockAICoT_AI1, mockAICoT_AI2, isBattlePopupVisible, selectedNodeId, currentMapTemplateName } = gameState;
+  const currentPlayer = players[currentPlayerId];
+
+  return (
+    <div className={`flex flex-col h-screen w-screen ${THEME_COLORS.TEXT_BASE} p-2 md:p-3 bg-gray-950 font-mono overflow-hidden`}>
+      <header className={`flex items-center justify-between mb-2 p-2 ${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} rounded-md shadow-lg`}>
+        <h1 className={`text-base md:text-lg font-bold ${THEME_COLORS.TEXT_HEADING} flex items-center`}><LucideGlobe size={18} className="mr-2"/>Noospheric Conquest <span className="text-xs opacity-70 ml-1 md:ml-2">(Map: {currentMapTemplateName})</span></h1>
+        <div className="flex items-center space-x-1 md:space-x-2">
+            <select 
+                value={selectedMapTemplateName} 
+                onChange={(e) => setSelectedMapTemplateName(e.target.value)}
+                className={`bg-gray-800 border ${THEME_COLORS.BORDER_STRONG} text-xs p-1 rounded focus:ring-1 ${THEME_COLORS.AI1.ring}`}
+            >
+                <option value="RANDOM">Random Map</option>
+                {MAP_TEMPLATES.map(template => (
+                    <option key={template.name} value={template.name}>{template.name}</option>
+                ))}
+            </select>
+            <button 
+                onClick={handleNewGameWithSelectedMap} 
+                className={`px-2 py-1 text-xs font-semibold rounded ${THEME_COLORS.AI2.bg} text-black hover:opacity-80 transition-opacity flex items-center`}
+            >
+               <LucideShuffle size={14} className="mr-1"/> New Game
+            </button>
+            <button onClick={toggleAutoPlay} className={`px-2 py-1 text-xs font-semibold rounded ${isAutoPlaying ? 'bg-yellow-500 text-black' : 'bg-blue-500 text-white'} hover:opacity-80 transition-opacity`}>
+                {isAutoPlaying ? 'Pause Sim' : 'Auto-Play'}
+            </button>
+            {!isAutoPlaying && (
+                 <button onClick={handleAdvanceManually} className={`px-2 py-1 text-xs font-semibold rounded ${THEME_COLORS.AI1.bg} text-black hover:opacity-80 transition-opacity flex items-center`}>
+                    {gameState.currentPhase === 'GAME_OVER' ? 'Restart' : gameState.isBattlePopupVisible ? 'Close & Next' : 'Next'} <LucideChevronRight size={14} className="inline"/>
+                </button>
+            )}
+        </div>
+      </header>
+
+      <div className="flex flex-col md:flex-row gap-2 md:gap-3 flex-grow min-h-0">
+        <div className="flex-grow flex flex-col gap-2 md:gap-3 md:w-3/5 lg:w-2/3">
+          <QuantumGambitMapDisplay gameState={gameState} onNodeClick={handleNodeClick} selectedNodeId={selectedNodeId} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-3">
+            <CoTDisplay title={`${AI1_NAME} (Red)`} cot={mockAICoT_AI1} isLoading={currentPlayerId === AI1_ID && ['DEPLOYMENT', 'ATTACK', 'MANEUVER'].includes(currentPhase) && isAutoPlaying} playerNameColor={THEME_COLORS.AI1.text} />
+            <CoTDisplay title={`${AI2_NAME} (Cyan)`} cot={mockAICoT_AI2} isLoading={currentPlayerId === AI2_ID && ['DEPLOYMENT', 'ATTACK', 'MANEUVER'].includes(currentPhase) && isAutoPlaying} playerNameColor={THEME_COLORS.AI2.text} />
+          </div>
+        </div>
+
+        <div className="w-full md:w-2/5 lg:w-1/3 flex flex-col gap-2 md:gap-3 min-h-0">
+          <div className={`${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} p-3 rounded shadow-md`}>
+            <div className="flex justify-between items-center mb-1">
+                <h2 className={`text-sm font-bold ${THEME_COLORS.TEXT_HEADING}`}>Turn: {currentTurn} ({players[currentPlayerId].name})</h2>
+                <span className={`text-xs font-mono ${THEME_COLORS.TEXT_MUTED} flex items-center`}><LucideTimer size={14} className="mr-1"/>{displayedTurnTime}</span>
+            </div>
+            <p className={`text-xs ${THEME_COLORS.TEXT_HEADING} mb-1`}>Phase: <span className="text-yellow-400 font-semibold">{currentPhase}</span></p>
+            {activeFluctuationEvent && (
+              <div className={`p-2 my-1 rounded text-xs border ${THEME_COLORS.EVENT} border-purple-500 bg-purple-900 bg-opacity-30`}>
+                <p><LucideAtom size={14} className="inline mr-1"/><strong>Event:</strong> {activeFluctuationEvent.resolvedDescription}</p>
+              </div>
+            )}
+            {gameState.gameOverMessage && (
+                <p className={`font-bold mt-1 ${gameState.winner === AI1_ID ? THEME_COLORS.AI1.text : gameState.winner === AI2_ID ? THEME_COLORS.AI2.text : THEME_COLORS.INFO}`}>
+                    {gameState.gameOverMessage}
+                </p>
+            )}
+          </div>
+          
+          <div className="grid grid-cols-2 gap-2 md:gap-3">
+             <MiniMapDisplay gameState={gameState} onNodeClick={handleNodeClick} selectedNodeId={selectedNodeId} />
+             <NodeInfoPanel gameState={gameState} selectedNodeId={selectedNodeId} />
+          </div>
+
+
+          <div className="grid grid-cols-2 gap-2 md:gap-3">
+            {[players[AI1_ID], players[AI2_ID]].map(p => (
+              <div key={p.id} className={`${THEME_COLORS.BG_PANEL} border ${p.id === AI1_ID ? THEME_COLORS.AI1.border : THEME_COLORS.AI2.border} p-2 rounded shadow-sm text-[10px] md:text-xs`}>
+                <h3 className={`font-semibold ${p.color}`}>{p.name}</h3>
+                <p className={`${THEME_COLORS.TEXT_MUTED}`}><LucideDollarSign size={12} className="inline mr-0.5"/>QR: {p.resources}</p>
+                <p className={`${THEME_COLORS.TEXT_MUTED}`}>Nodes: {Object.values(nodes).filter(n => n.owner === p.id).length}</p>
+                 <p className={`${THEME_COLORS.TEXT_MUTED}`}>Units: {Object.values(units).filter(u => u.owner === p.id).length}</p>
+                 <p className={`${THEME_COLORS.TEXT_MUTED}`}>KJs Held: {Object.keys(p.controlledKeyJunctionsTurns).filter(kjId => p.controlledKeyJunctionsTurns[kjId] > 0 && nodes[kjId]?.owner === p.id).length} ({Object.entries(p.controlledKeyJunctionsTurns).filter(([_,turns]) => turns > 0).map(([kjId, turns]) => `${nodes[kjId]?.name.substring(0,2)}:${turns}`).join(', ')})</p>
+              </div>
+            ))}
+          </div>
+
+          <div className={`${THEME_COLORS.BG_PANEL} border ${THEME_COLORS.BORDER_BASE} p-2 rounded shadow-md flex flex-col flex-grow min-h-[150px] max-h-[calc(100vh-550px)] md:max-h-full`}>
+            <h3 className={`text-sm font-semibold ${THEME_COLORS.TEXT_HEADING} border-b ${THEME_COLORS.BORDER_STRONG} pb-1 mb-1`}>System Log</h3>
+            <div ref={gameLogRef} className="text-[10px] md:text-xs space-y-0.5 overflow-y-auto flex-grow pr-1 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+              {gameLog.slice(-50).map(log => ( 
+                <div key={log.id} className="flex items-start">
+                  {log.icon && <span className={`mr-1 ${log.color || THEME_COLORS.TEXT_MUTED}`}>{log.icon}</span>}
+                  <span className={`${log.color || THEME_COLORS.TEXT_MUTED} whitespace-pre-wrap break-words`}>
+                    <span className="font-semibold">{log.sender}: </span>{log.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      {isBattlePopupVisible && battleReport && <BattlePopup report={battleReport} onClose={() => dispatch({type: 'HIDE_BATTLE_POPUP'})} gameState={gameState} />}
+      {isInfoScreenVisible && <InfoScreenPopup onClose={() => setIsInfoScreenVisible(false)} />}
+      <button 
+        onClick={() => setIsInfoScreenVisible(true)} 
+        className={`fixed bottom-3 right-3 p-2 rounded-full ${THEME_COLORS.BG_PANEL} ${THEME_COLORS.BORDER_STRONG} border hover:opacity-80 transition-opacity shadow-lg`}
+        title="Game Mode Information"
+      >
+        <LucideInfo size={20} className={THEME_COLORS.TEXT_HEADING}/>
+      </button>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+const App: React.FC = () => {
+  return (
+      <NoosphericConquestModeContainer /> // Renamed component
+  );
+};
+
+export default App;
+
