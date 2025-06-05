@@ -2,8 +2,7 @@
 # OVERMIND: Multi-Modal AI Simulation Interface
 
 OVERMIND is an advanced web application that provides a dynamic and immersive terminal-style interface for interacting with AI personas powered by the Google Gemini API. It features multiple distinct simulation modes, ranging from philosophical dialogues and memetic warfare simulations to strategic games like AI-driven chess and a global influence conquest game named "Noospheric Conquest".
-
-![OVERMIND UI Screenshot (Illustrative - Replace with actual screenshot if available)](docs/conquest.png)
+![OVERMIND UI Screenshot (main](docs/main.png)
 
 ## Key Features
 
@@ -49,6 +48,7 @@ The OVERMIND interface offers several distinct simulation protocols:
 *   **`noospheric-conquest.exe` (Global Influence Strategy):**
     *   **Overview:** A strategic simulation where GEM-Q and AXIOM compete for dominance over a conceptual 'noosphere' by capturing Nodes and Knowledge Junctions on various maps. Involves resource management, unit deployment (standard and evolved), and tactical combat.
     *   **Theme:** Strategic AI, resource management, territorial control, network theory. (See [`docs/noospheric-conquest.md`](./docs/noospheric-conquest.md) for detailed rules).
+    *   ![OVERMIND UI Screenshot conquest](docs/conquest.png)
 
 Each mode features unique system prompts for the AI personas, guiding their behavior and objectives. Detailed information about each mode can be accessed via the "Info" button in the application's control panel.
 
