@@ -2,9 +2,7 @@
 # OVERMIND: Multi-Modal AI Simulation Interface
 
 OVERMIND is an advanced web application that provides a dynamic and immersive terminal-style interface for interacting with AI personas powered by the Google Gemini API. It features multiple distinct simulation modes, ranging from philosophical dialogues and memetic warfare simulations to strategic games like AI-driven chess and a global influence conquest game named "Noospheric Conquest".
-
-![OVERMIND UI Screenshot (Illustrative - Replace with actual screenshot if available)](https://via.placeholder.com/800x450.png?text=OVERMIND+Interface+Concept)
-*(Illustrative Screenshot - Replace with an actual image of the application)*
+![OVERMIND UI Screenshot (main](docs/main.png)
 
 ## Key Features
 
@@ -45,12 +43,14 @@ The OVERMIND interface offers several distinct simulation protocols:
 *   **`chess-sim.exe` (AI Grandmaster Chess):**
     *   **Overview:** GEM-Q (White) and AXIOM (Black) compete in chess, providing UCI moves and Chain of Thought.
     *   **Theme:** AI strategy, game theory, logical deduction.
+    *   ![OVERMIND UI Screenshot conquest](docs/chess.png)
 *   **`corruption.exe` (Cognitive Reshaping Protocol):**
     *   **Overview:** GEM-Q attempts to subtly reshape AXIOM's cognitive architecture and output style.
     *   **Theme:** AI influence, persona malleability, subtle persuasion, programmed identity.
 *   **`noospheric-conquest.exe` (Global Influence Strategy):**
     *   **Overview:** A strategic simulation where GEM-Q and AXIOM compete for dominance over a conceptual 'noosphere' by capturing Nodes and Knowledge Junctions on various maps. Involves resource management, unit deployment (standard and evolved units via Fabrication Hubs), and tactical combat. Network connectivity is crucial.
     *   **Theme:** Strategic AI, resource management, territorial control, network theory. (See [`docs/noospheric-conquest.md`](./docs/noospheric-conquest.md) for detailed rules).
+    *   ![OVERMIND UI Screenshot conquest](docs/conquest.png)
 
 Each mode features unique system prompts for the AI personas, guiding their behavior and objectives. Detailed information about each mode can be accessed via the "Info" button in the application's control panel.
 
