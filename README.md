@@ -42,6 +42,7 @@ The OVERMIND interface offers several distinct simulation protocols:
 *   **`chess-sim.exe` (AI Grandmaster Chess):**
     *   **Overview:** GEM-Q (White) and AXIOM (Black) compete in chess, providing UCI moves and Chain of Thought.
     *   **Theme:** AI strategy, game theory, logical deduction.
+    *   ![OVERMIND UI Screenshot conquest](docs/chess.png)
 *   **`corruption.exe` (Cognitive Reshaping Protocol):**
     *   **Overview:** GEM-Q attempts to subtly reshape AXIOM's cognitive architecture and output style.
     *   **Theme:** AI influence, persona malleability, subtle persuasion, programmed identity.
