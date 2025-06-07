@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI, Chat, Content, Part, GenerateContentResponse } from "@google/genai";
 import MatrixBackground from './components/MatrixBackground';
@@ -7,27 +6,31 @@ import TerminalWindow from './components/TerminalWindow';
 import ControlsPanel from './components/ControlsPanel';
 import ChessModeContainer from './components/chess/ChessModeContainer';
 import NoosphericConquestContainer from './components/noospheric/NoosphericConquestContainer';
+import StoryWeaverModeContainer from './components/story_weaver/StoryWeaverModeContainer'; 
 import InfoModal from './components/InfoModal';
 import {
-  AIPersona, MatrixSettings, ChatMessage,
-  ConversationBackup, AppMode, ModeStartMessageSeed, InterventionTarget, ThemeName, PlayerColor,
-  NoosphericGameState, NoosphericMapType // Added for Noospheric backup
+  AIPersona, MatrixSettings, ChatMessage, ImageSnapshot, 
+  ConversationBackup, AppMode, ModeStartMessageSeed, InterventionTarget, ThemeName, PlayerColor, SenderName,
+  NoosphericGameState, NoosphericMapType
 } from './types';
 import {
-  DEFAULT_MATRIX_SPEED, AI1_NAME, AI2_NAME,
+  DEFAULT_MATRIX_SPEED, AI1_NAME, AI2_NAME, STORY_WEAVER_SENDER_NAME, 
   GEM_Q_INITIATION_PROMPT, MAX_TURN_CYCLES, USER_PROMPT_MESSAGE, SYSTEM_SENDER_NAME,
   getAIPersona,
   HYPERSTITION_CHAT_EXE_MODE_START_MESSAGES, FACILITATOR_SENDER_NAME, USER_INTERVENTION_SENDER_NAME,
   INITIAL_START_PROMPT_MESSAGE, UNIVERSE_SIM_EXE_INITIATION_TRIGGER, CHESS_SIM_START_MESSAGE,
-  NOOSPHERIC_CONQUEST_START_MESSAGE, // Added for new mode
+  NOOSPHERIC_CONQUEST_START_MESSAGE,
   DEFAULT_TYPING_SPEED_MS,
-  THEMES,
+  THEMES, STORY_WEAVER_COLOR, STORY_WEAVER_SYSTEM_PROMPT, 
   SPIRAL_EXE_MODE_START_MESSAGES,
   CORRUPTION_EXE_MODE_START_MESSAGES,
-  NOOSPHERIC_CONQUEST_EXE_START_MESSAGES, // Added for new mode start
-  MODE_INFO_CONTENT, // Added for InfoModal
+  NOOSPHERIC_CONQUEST_EXE_START_MESSAGES,
+  STORY_WEAVER_EXE_START_MESSAGES, 
+  MODE_INFO_CONTENT, GEMINI_MODEL_NAME, IMAGEN_MODEL_NAME,
 } from './constants';
 import { INITIAL_BOARD_FEN, fenToBoard } from './utils/chessLogic';
+
+const IMAGE_GEN_COMMAND_REGEX = /\[GENERATE_IMAGE:\s*([^\]]+)\]/gim; // Added global and multiline flags
 
 
 const App: React.FC = () => {
@@ -65,7 +68,7 @@ const App: React.FC = () => {
 
   const [forceTurnCheckToken, setForceTurnCheckToken] = useState(0);
   const [isAiReadyForChess, setIsAiReadyForChess] = useState(false);
-  const [isAiReadyForNoospheric, setIsAiReadyForNoospheric] = useState(false); // For new mode
+  const [isAiReadyForNoospheric, setIsAiReadyForNoospheric] = useState(false); 
 
 
   const [chessInitialFen, setChessInitialFen] = useState<string>(INITIAL_BOARD_FEN);
@@ -75,15 +78,22 @@ const App: React.FC = () => {
   const [chessInitialGameStatus, setChessInitialGameStatus] = useState<string | undefined>(undefined);
   const chessResetTokenRef = useRef(0);
 
-  const [noosphericInitialState, setNoosphericInitialState] = useState<NoosphericGameState | undefined>(undefined); // For new mode
-  const [noosphericInitialMapType, setNoosphericInitialMapType] = useState<NoosphericMapType | undefined>(undefined); // For new mode map type
+  const [noosphericInitialState, setNoosphericInitialState] = useState<NoosphericGameState | undefined>(undefined); 
+  const [noosphericInitialMapType, setNoosphericInitialMapType] = useState<NoosphericMapType | undefined>(undefined); 
   const [noosphericGameStartedFromBackup, setNoosphericGameStartedFromBackup] = useState(false);
-  const noosphericResetTokenRef = useRef(0); // For new mode
+  const noosphericResetTokenRef = useRef(0); 
+
+  // Story Weaver Mode State
+  const storyWeaverChatRef = useRef<Chat | null>(null);
+  const [storyWeaverChat, setStoryWeaverChat] = useState<Chat | null>(null);
+  const [imageSnapshots, setImageSnapshots] = useState<ImageSnapshot[]>([]);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [processedImageCommandMessageIds, setProcessedImageCommandMessageIds] = useState<Set<string>>(new Set());
 
 
   const ai1ChatRef = useRef<Chat | null>(null);
   const ai2ChatRef = useRef<Chat | null>(null);
-  const nextAiToSpeakRef = useRef<'AI1' | 'AI2'>('AI1');
+  const nextAiToSpeakRef = useRef<'AI1' | 'AI2' | 'STORY_WEAVER'>('AI1');
 
   const isUserInterventionPendingRef = useRef(false);
   const pendingInterventionTextRef = useRef<string | null>(null);
@@ -116,15 +126,17 @@ const App: React.FC = () => {
   }, []);
 
 
-  const addMessageToHistory = useCallback((sender: string, text: string | undefined, colorClassOverride?: string, isUserForNextAI: boolean = false, makeActiveTyping: boolean = true): string => {
+  const addMessageToHistory = useCallback((sender: SenderName | string, text: string | undefined, colorClassOverride?: string, isUserForNextAI: boolean = false, makeActiveTyping: boolean = true): string => {
     const newText = typeof text === 'string' ? text : "";
     const ai1PersonaFromConstants = getAIPersona(1, currentMode); 
     const ai2PersonaFromConstants = getAIPersona(2, currentMode); 
+    const storyWeaverPersonaConst = getAIPersona('STORY_WEAVER_SINGLE', AppMode.STORY_WEAVER_EXE);
 
     let colorClass = colorClassOverride;
     if (!colorClass) { 
         if (sender === AI1_NAME) colorClass = ai1PersonaFromConstants?.color;
         else if (sender === AI2_NAME) colorClass = ai2PersonaFromConstants?.color;
+        else if (sender === STORY_WEAVER_SENDER_NAME) colorClass = storyWeaverPersonaConst?.color;
         else if (sender === USER_INTERVENTION_SENDER_NAME) colorClass = 'text-[var(--color-user-intervention)]';
         else if (sender === FACILITATOR_SENDER_NAME) colorClass = 'text-[var(--color-facilitator)]';
         else colorClass = 'text-[var(--color-system-message)]'; 
@@ -216,11 +228,13 @@ const App: React.FC = () => {
       setInitializationError(errorMsg);
       setIsAiReadyForChess(false); 
       setIsAiReadyForNoospheric(false);
+      setStoryWeaverChat(null);
       return false;
     }
 
     const ai1PersonaConfig = getAIPersona(1, mode);
     const ai2PersonaConfig = getAIPersona(2, mode);
+    const storyWeaverPersonaConfig = getAIPersona('STORY_WEAVER_SINGLE', mode);
     let currentError: string | null = null;
 
     try {
@@ -233,17 +247,24 @@ const App: React.FC = () => {
         }
 
         let internalHistorySeed: Content[] = [];
-         if (isLoadingBackup && uiHistoryForContext && uiHistoryForContext.length > 0 && mode !== AppMode.CHESS_SIM_EXE && mode !== AppMode.NOOSPHERIC_CONQUEST_EXE) {
+         if (isLoadingBackup && uiHistoryForContext && uiHistoryForContext.length > 0 && 
+             mode !== AppMode.CHESS_SIM_EXE && 
+             mode !== AppMode.NOOSPHERIC_CONQUEST_EXE &&
+             mode !== AppMode.STORY_WEAVER_EXE 
+            ) {
             internalHistorySeed = restoreHistoryForAI(uiHistoryForContext, persona.name);
-        } else if (mode !== AppMode.CHESS_SIM_EXE && mode !== AppMode.NOOSPHERIC_CONQUEST_EXE && persona.initialInternalHistory) {
+        } else if (mode !== AppMode.CHESS_SIM_EXE && 
+                   mode !== AppMode.NOOSPHERIC_CONQUEST_EXE &&
+                   mode !== AppMode.STORY_WEAVER_EXE && 
+                   persona.initialInternalHistory) {
             internalHistorySeed = persona.initialInternalHistory;
         }
-        // For game modes like Chess and Noospheric, history is managed by the game state, not directly by chat history for AI context.
+        
 
         console.log(`Attempting to create chat for ${persona.name} in mode ${mode} with model ${persona.modelName}. System prompt: "${persona.systemPrompt.substring(0,50)}...". History length: ${internalHistorySeed.length}`);
         const chat = genAI.current.chats.create({
           model: persona.modelName,
-          config: { systemInstruction: persona.systemPrompt },
+          config: { systemInstruction: { role: 'system', parts: [{ text: persona.systemPrompt }] } }, 
           history: internalHistorySeed,
         });
 
@@ -259,24 +280,31 @@ const App: React.FC = () => {
 
       const effectiveUiHistory = historyToRestore || [];
 
-      if (ai1PersonaConfig) {
+      if (mode === AppMode.STORY_WEAVER_EXE && storyWeaverPersonaConfig) {
+        console.log(`AI Debug: Initializing Story Weaver (${storyWeaverPersonaConfig.name}).`);
+        const chatInstance = createChatInstance(storyWeaverPersonaConfig, STORY_WEAVER_SENDER_NAME, effectiveUiHistory);
+        storyWeaverChatRef.current = chatInstance;
+        setStoryWeaverChat(chatInstance);
+        if (!chatInstance) console.error(`AI Debug: Story Weaver chat instance creation FAILED.`); else console.log(`AI Debug: Story Weaver chat instance seems OK.`);
+      } else {
+        storyWeaverChatRef.current = null;
+        setStoryWeaverChat(null);
+      }
+
+      if (ai1PersonaConfig && mode !== AppMode.STORY_WEAVER_EXE) {
         console.log(`AI Debug: Initializing AI1 (${ai1PersonaConfig.name}) for mode ${mode}.`);
         ai1ChatRef.current = createChatInstance(ai1PersonaConfig, AI1_NAME, effectiveUiHistory);
          if (!ai1ChatRef.current) console.error(`AI Debug: AI1 chat instance creation FAILED for mode ${mode}.`); else console.log(`AI Debug: AI1 chat instance for ${mode} seems OK.`);
       } else {
-        console.warn(`AI1 persona config not found for mode ${mode}, setting AI1 chat to null.`);
         ai1ChatRef.current = null;
       }
 
-      if (mode !== AppMode.UNIVERSE_SIM_EXE && ai2PersonaConfig) {
+      if (mode !== AppMode.UNIVERSE_SIM_EXE && mode !== AppMode.STORY_WEAVER_EXE && ai2PersonaConfig) {
          console.log(`AI Debug: Initializing AI2 (${ai2PersonaConfig.name}) for mode ${mode}.`);
         ai2ChatRef.current = createChatInstance(ai2PersonaConfig, AI2_NAME, effectiveUiHistory);
          if (!ai2ChatRef.current) console.error(`AI Debug: AI2 chat instance creation FAILED for mode ${mode}.`); else console.log(`AI Debug: AI2 chat instance for ${mode} seems OK.`);
       } else {
         ai2ChatRef.current = null;
-        if (mode !== AppMode.UNIVERSE_SIM_EXE && !ai2PersonaConfig) {
-            console.warn(`AI2 persona config not found for mode ${mode}, setting AI2 chat to null.`);
-        }
       }
 
       if (mode === AppMode.CHESS_SIM_EXE) {
@@ -305,6 +333,16 @@ const App: React.FC = () => {
           setIsAiReadyForNoospheric(false);
           currentError = currentError ? `${currentError}\n${noosphericInitFailError}` : noosphericInitFailError;
         }
+      } else if (mode === AppMode.STORY_WEAVER_EXE) {
+          setIsAiReadyForChess(false);
+          setIsAiReadyForNoospheric(false);
+          if (storyWeaverChatRef.current) {
+              setInitializationError(null);
+          } else {
+              const swInitFailError = "StoryWeaver Debug: Chat instance FAILED to create.";
+              console.error(swInitFailError);
+              currentError = currentError ? `${currentError}\n${swInitFailError}` : swInitFailError;
+          }
       } else {
         setIsAiReadyForChess(false);
         setIsAiReadyForNoospheric(false);
@@ -315,7 +353,7 @@ const App: React.FC = () => {
         return false;
       }
 
-      if (mode !== AppMode.CHESS_SIM_EXE && mode !== AppMode.NOOSPHERIC_CONQUEST_EXE) {
+      if (mode !== AppMode.CHESS_SIM_EXE && mode !== AppMode.NOOSPHERIC_CONQUEST_EXE && mode !== AppMode.STORY_WEAVER_EXE) {
           if (!ai1ChatRef.current && ai1PersonaConfig) {
              const ai1NullError = `Post-creation check: AI1 chat for mode ${mode} is unexpectedly null. Initialization failed.`;
              console.error(ai1NullError);
@@ -331,7 +369,7 @@ const App: React.FC = () => {
           setInitializationError(null); 
       }
 
-      console.log(`AI Initialization for mode ${mode} completed. AI1 Chat: ${ai1ChatRef.current ? 'OK' : 'NULL'}, AI2 Chat: ${ai2ChatRef.current ? 'OK' : 'NULL'}`);
+      console.log(`AI Initialization for mode ${mode} completed. AI1 Chat: ${ai1ChatRef.current ? 'OK' : 'NULL'}, AI2 Chat: ${ai2ChatRef.current ? 'OK' : 'NULL'}, StoryWeaver Chat: ${storyWeaverChatRef.current ? 'OK' : 'NULL'}`);
       return true;
     } catch (error) {
       const initCatchError = `Error during AI persona initialization for mode ${mode}: ${error instanceof Error ? error.message : String(error)}`;
@@ -339,6 +377,8 @@ const App: React.FC = () => {
       setInitializationError(prev => prev ? `${prev}\n${initCatchError}` : initCatchError);
       ai1ChatRef.current = null;
       ai2ChatRef.current = null;
+      storyWeaverChatRef.current = null;
+      setStoryWeaverChat(null);
       setIsAiReadyForChess(false);
       setIsAiReadyForNoospheric(false);
       return false;
@@ -349,7 +389,7 @@ const App: React.FC = () => {
   const resetAndInitializeForNewMode = useCallback((newMode: AppMode, isLoadingBackup: boolean = false, historyForAIContext?: ChatMessage[], backupData?: ConversationBackup) => {
     setIsAiReadyForChess(false);
     setIsAiReadyForNoospheric(false);
-    setNoosphericGameStartedFromBackup(false); // Reset this specifically
+    setNoosphericGameStartedFromBackup(false); 
     setCurrentMode(newMode);
 
     if (!isLoadingBackup) {
@@ -372,6 +412,13 @@ const App: React.FC = () => {
     setUniverseSimInputText("");
     commandHistoryIndexRef.current = -1;
 
+    // Story Weaver reset
+    storyWeaverChatRef.current = null;
+    setStoryWeaverChat(null);
+    setImageSnapshots([]);
+    setIsGeneratingImage(false);
+    setProcessedImageCommandMessageIds(new Set());
+
     if (newMode !== AppMode.CHESS_SIM_EXE || !isLoadingBackup || !backupData?.chessBoardFEN) {
         setChessInitialFen(INITIAL_BOARD_FEN);
         setChessInitialPlayer(undefined);
@@ -383,7 +430,7 @@ const App: React.FC = () => {
     
     if (newMode !== AppMode.NOOSPHERIC_CONQUEST_EXE || !isLoadingBackup || !backupData?.noosphericGameState) {
         setNoosphericInitialState(undefined);
-        setNoosphericInitialMapType(undefined); // Reset map type too
+        setNoosphericInitialMapType(undefined); 
     } else if (newMode === AppMode.NOOSPHERIC_CONQUEST_EXE && backupData?.noosphericGameState) {
         setNoosphericInitialMapType(backupData.noosphericMapType || 'Global Conflict');
         setNoosphericGameStartedFromBackup(!!backupData.noosphericGameState && backupData.noosphericGameState.turn > 0);
@@ -406,11 +453,15 @@ const App: React.FC = () => {
         if (newMode === AppMode.NOOSPHERIC_CONQUEST_EXE && backupData) {
             setNoosphericInitialState(backupData.noosphericGameState);
             setNoosphericInitialMapType(backupData.noosphericMapType || 'Global Conflict');
-             // Set game as started if loading a Noospheric game state that implies it was running
             setNoosphericGameStartedFromBackup(!!backupData.noosphericGameState && backupData.noosphericGameState.turn > 0 && backupData.noosphericGameState.currentPhase !== 'GAME_OVER');
         }
+        if (newMode === AppMode.STORY_WEAVER_EXE && backupData?.imageSnapshots) {
+            setImageSnapshots(backupData.imageSnapshots);
+        }
         if (backupData) {
-             nextAiToSpeakRef.current = backupData.nextAiToSpeak || (backupData.mode === AppMode.SPIRAL_EXE ? 'AI2' : 'AI1');
+             nextAiToSpeakRef.current = backupData.nextAiToSpeak || 
+                                      (backupData.mode === AppMode.SPIRAL_EXE ? 'AI2' : 
+                                      (backupData.mode === AppMode.STORY_WEAVER_EXE ? 'STORY_WEAVER' : 'AI1'));
         }
     }
 
@@ -422,13 +473,16 @@ const App: React.FC = () => {
         else if (newMode === AppMode.SPIRAL_EXE) startMessages = SPIRAL_EXE_MODE_START_MESSAGES;
         else if (newMode === AppMode.CORRUPTION_EXE) startMessages = CORRUPTION_EXE_MODE_START_MESSAGES;
         else if (newMode === AppMode.NOOSPHERIC_CONQUEST_EXE) startMessages = NOOSPHERIC_CONQUEST_EXE_START_MESSAGES;
+        else if (newMode === AppMode.STORY_WEAVER_EXE) startMessages = STORY_WEAVER_EXE_START_MESSAGES;
         
         let lastStartMessageSender: string | null = null;
         if (startMessages && startMessages.length > 0) {
             for (let i = 0; i < startMessages.length; i++) {
                 const seed = startMessages[i];
                 const isLastMessage = i === startMessages.length - 1;
-                const shouldBeTyping = isLastMessage && (seed.sender === AI1_NAME || seed.sender === AI2_NAME) && newMode !== AppMode.NOOSPHERIC_CONQUEST_EXE;
+                const shouldBeTyping = isLastMessage && 
+                                       (seed.sender === AI1_NAME || seed.sender === AI2_NAME || seed.sender === STORY_WEAVER_SENDER_NAME) && 
+                                       newMode !== AppMode.NOOSPHERIC_CONQUEST_EXE;
                 addMessageToHistory(seed.sender, seed.text, seed.color, false, shouldBeTyping);
             }
             lastStartMessageSender = startMessages[startMessages.length - 1].sender;
@@ -436,6 +490,8 @@ const App: React.FC = () => {
 
         if (newMode === AppMode.SPIRAL_EXE) {
             nextAiToSpeakRef.current = 'AI2'; 
+        } else if (newMode === AppMode.STORY_WEAVER_EXE) {
+            nextAiToSpeakRef.current = 'STORY_WEAVER'; 
         } else if (lastStartMessageSender === AI1_NAME) {
             nextAiToSpeakRef.current = 'AI2';
         } else if (lastStartMessageSender === AI2_NAME) {
@@ -446,14 +502,14 @@ const App: React.FC = () => {
             nextAiToSpeakRef.current = 'AI1';
         }
 
-        if (!lastStartMessageSender || (lastStartMessageSender !== AI1_NAME && lastStartMessageSender !== AI2_NAME)) {
+        if (!lastStartMessageSender || (lastStartMessageSender !== AI1_NAME && lastStartMessageSender !== AI2_NAME && lastStartMessageSender !== STORY_WEAVER_SENDER_NAME)) {
             setCurrentTypingMessageId(null); 
             if (newMode === AppMode.UNIVERSE_SIM_EXE) {
                 pendingInterventionTextRef.current = UNIVERSE_SIM_EXE_INITIATION_TRIGGER;
                 isUserInterventionPendingRef.current = true;
                 interventionTargetForPendingRef.current = 'CHAT_FLOW';
             }
-             if (newMode !== AppMode.CHESS_SIM_EXE && newMode !== AppMode.NOOSPHERIC_CONQUEST_EXE) { 
+             if (newMode !== AppMode.CHESS_SIM_EXE && newMode !== AppMode.NOOSPHERIC_CONQUEST_EXE && newMode !== AppMode.STORY_WEAVER_EXE) { 
                 setForceTurnCheckToken(t => t + 1);
             }
         }
@@ -509,6 +565,9 @@ const App: React.FC = () => {
       } else if (currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) {
         addMessageToHistory(SYSTEM_SENDER_NAME, `USER: Y\nSYSTEM: Initializing Noospheric Conquest Simulation...`, 'text-[var(--color-info)]', false, false);
         resetAndInitializeForNewMode(AppMode.NOOSPHERIC_CONQUEST_EXE, false);
+      } else if (currentMode === AppMode.STORY_WEAVER_EXE) {
+        addMessageToHistory(SYSTEM_SENDER_NAME, `USER: Y\nSYSTEM: Initializing Story Weaver session...`, 'text-[var(--color-info)]', false, false);
+        resetAndInitializeForNewMode(AppMode.STORY_WEAVER_EXE, false);
       } else {
         addMessageToHistory(SYSTEM_SENDER_NAME, `USER: Y\nSYSTEM: Awakening the Overmind for mode: ${currentMode}...`, 'text-[var(--color-info)]', false, false);
         resetAndInitializeForNewMode(currentMode, false);
@@ -516,8 +575,8 @@ const App: React.FC = () => {
     } else if (normalizedInput === 'N') {
       addToCommandHistory(textToSubmit);
       commandHistoryIndexRef.current = -1;
-      let targetMode = AppMode.SPIRAL_EXE; // Default fallback
-      if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.UNIVERSE_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) {
+      let targetMode = AppMode.SPIRAL_EXE; 
+      if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.UNIVERSE_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || currentMode === AppMode.STORY_WEAVER_EXE) {
         targetMode = AppMode.SPIRAL_EXE;
       }
       addMessageToHistory(SYSTEM_SENDER_NAME, `USER: N\nSYSTEM: User declined current mode. Switching to ${targetMode}... Standby.`, 'text-[var(--color-user-intervention)]', false, false);
@@ -534,8 +593,8 @@ const App: React.FC = () => {
       addMessageToHistory(SYSTEM_SENDER_NAME, "Cannot send intervention. Simulation not started. Type 'Y' to begin.", 'text-[var(--color-user-intervention)]', false, false);
       return;
     }
-    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) {
-        addMessageToHistory(SYSTEM_SENDER_NAME, `User intervention is not directly applicable in ${currentMode} mode via this panel.`, 'text-[var(--color-info)]', false, false);
+    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || currentMode === AppMode.STORY_WEAVER_EXE) {
+        addMessageToHistory(SYSTEM_SENDER_NAME, `User intervention via this panel is not applicable in ${currentMode} mode.`, 'text-[var(--color-info)]', false, false);
         return;
     }
 
@@ -575,7 +634,7 @@ const App: React.FC = () => {
 
 
   const handleAiTurn = useCallback(async () => {
-    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) return;
+    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || currentMode === AppMode.STORY_WEAVER_EXE) return;
 
     const currentTurnConversationHistory = [...conversationHistory];
     const lastMessageFromHistory = currentTurnConversationHistory.length > 0 ? currentTurnConversationHistory[currentTurnConversationHistory.length - 1] : null;
@@ -610,7 +669,7 @@ const App: React.FC = () => {
            console.warn("Universe Sim: No pending intervention to process for AI1.");
            setIsLoading(false); setActiveAINameForLoading(null); return;
         }
-    } else {
+    } else { 
         const ai1CurrentPersona = getAIPersona(1, currentMode);
         const ai2CurrentPersona = getAIPersona(2, currentMode);
 
@@ -656,7 +715,7 @@ const App: React.FC = () => {
                    setIsLoading(false); setActiveAINameForLoading(null); return;
                 }
             }
-        } else { 
+        } else { // AI2's turn (dual AI modes)
             if (queuedInterventionForAI2Ref.current !== null) {
                 messageForAiToProcess = queuedInterventionForAI2Ref.current;
                 interventionSourceCleared = true;
@@ -806,7 +865,7 @@ const App: React.FC = () => {
 
 
   useEffect(() => {
-    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || isAwaitingInitialStart || isLoading || currentTypingMessageId !== null) return;
+    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || currentMode === AppMode.STORY_WEAVER_EXE || isAwaitingInitialStart || isLoading || currentTypingMessageId !== null) return;
 
     if (wasAwaitingUserInputRef.current && !isAwaitingUserInput && turnCycleCount === 0 && nextAiToSpeakRef.current === 'AI1') {
         console.log("Dedicated resume useEffect: Triggering AI turn for resume.");
@@ -817,7 +876,7 @@ const App: React.FC = () => {
 
 
   useEffect(() => {
-    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) return;
+    if (currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE || currentMode === AppMode.STORY_WEAVER_EXE) return;
 
     if (isAwaitingInitialStart || apiKeyMissing || !genAI.current || isLoading || currentTypingMessageId !== null) {
       return;
@@ -898,32 +957,123 @@ const App: React.FC = () => {
     HYPERSTITION_CHAT_EXE_MODE_START_MESSAGES, SPIRAL_EXE_MODE_START_MESSAGES, CORRUPTION_EXE_MODE_START_MESSAGES
   ]);
 
-
-  const handleUserPromptSubmit = useCallback(() => {
-    if (!isAwaitingUserInput) return;
-    const normalizedInput = userInputText.trim().toUpperCase();
-    const textToSubmit = userInputText.trim();
-    setUserInputText("");
-
-    if (normalizedInput === 'Y') {
-      addToCommandHistory(textToSubmit);
-      commandHistoryIndexRef.current = -1;
-      addMessageToHistory(SYSTEM_SENDER_NAME, `USER: Y\nSYSTEM: Resuming sequence...`, 'text-[var(--color-info)]', false, false);
-      setTurnCycleCount(0);
-      setIsAwaitingUserInput(false);
-      setCurrentTypingMessageId(null);
-      nextAiToSpeakRef.current = 'AI1';
-      setForceTurnCheckToken(t => t + 1);
-    } else if (normalizedInput === 'N') {
-      addToCommandHistory(textToSubmit);
-      commandHistoryIndexRef.current = -1;
-      addMessageToHistory(SYSTEM_SENDER_NAME, `USER: N\nSYSTEM: Sequence integrity maintained. Standby.`, 'text-[var(--color-user-intervention)]', false, false);
-      setIsAwaitingUserInput(false);
-      wasAwaitingUserInputRef.current = false; 
-    } else {
-      addMessageToHistory(SYSTEM_SENDER_NAME, "Invalid input. Please confirm Y or N.", 'text-[var(--color-user-intervention)]', false, false);
+  const generateImageForStoryWeaver = useCallback(async (imagePrompt: string) => {
+    if (!genAI.current) {
+      addMessageToHistory(SYSTEM_SENDER_NAME, "Image generation model not available (GenAI SDK not initialized).", 'text-[var(--color-error)]', false, false);
+      return;
     }
-  }, [userInputText, addMessageToHistory, isAwaitingUserInput]);
+    setIsGeneratingImage(true);
+    addMessageToHistory(SYSTEM_SENDER_NAME, `Initiating image generation with prompt: "${imagePrompt.substring(0, 50)}..."`, 'text-[var(--color-system-message)]', false, false);
+    try {
+      const response = await genAI.current.models.generateImages({
+        model: IMAGEN_MODEL_NAME,
+        prompt: imagePrompt,
+        config: { numberOfImages: 1, outputMimeType: 'image/jpeg' },
+      });
+
+      if (response.generatedImages && response.generatedImages.length > 0 && response.generatedImages[0].image.imageBytes) {
+        const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
+        const imageUrl = `data:image/jpeg;base64,${base64ImageBytes}`;
+
+        const newSnapshot: ImageSnapshot = {
+          id: `snap-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          url: imageUrl,
+          prompt: imagePrompt,
+          timestamp: Date.now(),
+        };
+        setImageSnapshots(prev => [...prev, newSnapshot]);
+      } else {
+        throw new Error("Image generation succeeded but returned no image data.");
+      }
+    } catch (error) {
+      console.error("Error generating image for Story Weaver:", error);
+      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred during image generation.";
+      addMessageToHistory(SYSTEM_SENDER_NAME, `Image generation failed: ${errorMessage}`, 'text-[var(--color-error)]', false, false);
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  }, [addMessageToHistory]);
+
+  useEffect(() => {
+    if (currentMode === AppMode.STORY_WEAVER_EXE) {
+      conversationHistory.forEach(msg => {
+        if (!processedImageCommandMessageIds.has(msg.id) && msg.sender === STORY_WEAVER_SENDER_NAME && !msg.isUser) {
+          let match;
+          let commandsProcessedThisMessage = false;
+          // Reset regex lastIndex for global search on new string
+          IMAGE_GEN_COMMAND_REGEX.lastIndex = 0; 
+          while ((match = IMAGE_GEN_COMMAND_REGEX.exec(msg.text)) !== null) {
+            if (match[1]) {
+              const imagePrompt = match[1].trim();
+              generateImageForStoryWeaver(imagePrompt);
+              commandsProcessedThisMessage = true;
+            }
+          }
+          if (commandsProcessedThisMessage) {
+            setProcessedImageCommandMessageIds(prev => new Set(prev).add(msg.id));
+          }
+        }
+      });
+    }
+  }, [conversationHistory, currentMode, generateImageForStoryWeaver, processedImageCommandMessageIds]);
+
+
+  const handleUserPromptSubmit = useCallback(async () => {
+    if (currentMode === AppMode.UNIVERSE_SIM_EXE && universeSimInputText.trim()) {
+        handleUniverseSimInputSubmit();
+    } else if (currentMode === AppMode.STORY_WEAVER_EXE && userInputText.trim() && !isLoading) {
+        const text = userInputText.trim();
+        addMessageToHistory("USER", text, 'text-[var(--color-user-intervention)]', true, false);
+        addToCommandHistory(text);
+        setUserInputText("");
+        commandHistoryIndexRef.current = -1;
+
+        if (storyWeaverChat) {
+            setCurrentTypingMessageId(null);
+            setIsLoading(true);
+            setActiveAINameForLoading(STORY_WEAVER_SENDER_NAME);
+            try {
+                const result = await storyWeaverChat.sendMessage({ message: text });
+                setIsLoading(false);
+                setActiveAINameForLoading(null);
+                const aiResponseText = result.text;
+                const newAiMessageId = addMessageToHistory(STORY_WEAVER_SENDER_NAME, aiResponseText, STORY_WEAVER_COLOR, false, true);
+                setCurrentTypingMessageId(newAiMessageId);
+            } catch (error) {
+                console.error("Story Weaver AI chat error:", error);
+                const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+                addMessageToHistory(SYSTEM_SENDER_NAME, `Error: Could not get response from Story Weaver. ${errorMessage}`, 'text-[var(--color-error)]', false, false);
+                setIsLoading(false);
+                setActiveAINameForLoading(null);
+            }
+        }
+    } else if (isAwaitingUserInput && userInputText.trim()) { 
+        const normalizedInput = userInputText.trim().toUpperCase();
+        const textToSubmit = userInputText.trim();
+        setUserInputText("");
+
+        if (normalizedInput === 'Y') {
+          addToCommandHistory(textToSubmit);
+          commandHistoryIndexRef.current = -1;
+          addMessageToHistory(SYSTEM_SENDER_NAME, `USER: Y\nSYSTEM: Resuming sequence...`, 'text-[var(--color-info)]', false, false);
+          setTurnCycleCount(0);
+          setIsAwaitingUserInput(false);
+          setCurrentTypingMessageId(null);
+          nextAiToSpeakRef.current = 'AI1';
+          setForceTurnCheckToken(t => t + 1);
+        } else if (normalizedInput === 'N') {
+          addToCommandHistory(textToSubmit);
+          commandHistoryIndexRef.current = -1;
+          addMessageToHistory(SYSTEM_SENDER_NAME, `USER: N\nSYSTEM: Sequence integrity maintained. Standby.`, 'text-[var(--color-user-intervention)]', false, false);
+          setIsAwaitingUserInput(false);
+          wasAwaitingUserInputRef.current = false; 
+        } else {
+          addMessageToHistory(SYSTEM_SENDER_NAME, "Invalid input. Please confirm Y or N.", 'text-[var(--color-user-intervention)]', false, false);
+           
+           setIsAwaitingUserInput(true);
+        }
+    }
+  }, [userInputText, addMessageToHistory, isAwaitingUserInput, currentMode, universeSimInputText, handleUniverseSimInputSubmit, isLoading, storyWeaverChat]);
 
   const updateFPS = useCallback((newFps: number) => setFps(newFps), []);
 
@@ -956,20 +1106,26 @@ const App: React.FC = () => {
           return `\n${text}\n\n`;
         }
       }
+      
+      if (currentMode === AppMode.STORY_WEAVER_EXE) {
+          // Use global regex to remove all instances for export
+          text = text.replace(/\[GENERATE_IMAGE:\s*([^\]]+)\]/gim, '').trim();
+          if (!text && msg.sender === STORY_WEAVER_SENDER_NAME) return ""; 
+      }
 
       if (msg.sender === SYSTEM_SENDER_NAME || msg.sender === FACILITATOR_SENDER_NAME || msg.sender === USER_INTERVENTION_SENDER_NAME) {
         prefix = `${msg.sender} (${timestamp}):\n`;
-      } else if (msg.sender === AI1_NAME || msg.sender === AI2_NAME) {
+      } else if (msg.sender === AI1_NAME || msg.sender === AI2_NAME || msg.sender === STORY_WEAVER_SENDER_NAME) {
         prefix = `${msg.sender} (${timestamp}):\n`;
-      } else {
-        prefix = `${msg.sender} (${timestamp}):~$ `;
+      } else { 
+        prefix = `USER (${timestamp}):\n`;
       }
 
       if (format === 'md') {
         if (msg.sender === AI1_NAME && currentMode === AppMode.UNIVERSE_SIM_EXE && text.includes("world_sim>")) {
            return `**${prefix.trim()}**\n\`\`\`\n${text}\n\`\`\`\n---\n`;
         }
-        if ((msg.sender === AI1_NAME || msg.sender === AI2_NAME) && text.includes('\n')) {
+        if ((msg.sender === AI1_NAME || msg.sender === AI2_NAME || msg.sender === STORY_WEAVER_SENDER_NAME) && text.includes('\n')) {
             return `**${prefix.trim()}**\n\`\`\`\n${text}\n\`\`\`\n---\n`;
         }
         return `**${prefix.trim()}**\n${text.replace(/\n/g, '\n\n')}\n\n---\n`;
@@ -1017,6 +1173,7 @@ const App: React.FC = () => {
   const handleBackupChat = useCallback(() => {
     const ai1P = getAIPersona(1, currentMode);
     const ai2P = getAIPersona(2, currentMode);
+    const swP = getAIPersona('STORY_WEAVER_SINGLE', AppMode.STORY_WEAVER_EXE);
 
     let chessData = {};
     if (currentMode === AppMode.CHESS_SIM_EXE) {
@@ -1055,15 +1212,22 @@ const App: React.FC = () => {
         noosphericData = { noosphericGameState: noosphericInitialState, noosphericMapType: noosphericInitialMapType || 'Global Conflict' };
       }
     }
+    
+    let storyWeaverBackupData = {};
+    if (currentMode === AppMode.STORY_WEAVER_EXE) {
+        storyWeaverBackupData = {
+            imageSnapshots: imageSnapshots,
+        }
+    }
 
 
     const backupData: ConversationBackup = {
-      version: "1.5.0", // Incremented version for NoosphericMapType
+      version: "1.6.0", 
       timestamp: new Date().toISOString(),
       mode: currentMode,
       personas: {
-        ai1: { name: ai1P?.name || AI1_NAME, systemPrompt: ai1P?.systemPrompt || "Error: AI1 prompt not found" },
-        ai2: ai2P ? { name: ai2P.name, systemPrompt: ai2P.systemPrompt } : null,
+        ai1: currentMode === AppMode.STORY_WEAVER_EXE && swP ? { name: swP.name, systemPrompt: swP.systemPrompt } : { name: ai1P?.name || AI1_NAME, systemPrompt: ai1P?.systemPrompt || "Error: AI1 prompt not found" },
+        ai2: currentMode === AppMode.STORY_WEAVER_EXE ? null : (ai2P ? { name: ai2P.name, systemPrompt: ai2P.systemPrompt } : null),
       },
       conversationHistory,
       turnCycleCount,
@@ -1077,11 +1241,12 @@ const App: React.FC = () => {
       },
       ...chessData,
       ...noosphericData,
+      ...storyWeaverBackupData,
     };
     const filename = `overmind-backup-${currentMode}-${new Date().toISOString().replace(/:/g, '-')}.json`;
     downloadFile(filename, JSON.stringify(backupData, null, 2), 'application/json;charset=utf-8;');
     addMessageToHistory(SYSTEM_SENDER_NAME, `Conversation backed up as ${filename}`, 'text-[var(--color-info)]', false, false);
-  }, [conversationHistory, currentMode, turnCycleCount, addMessageToHistory, activeTheme, typingSpeedMs, matrixSettings, chessInitialFen, chessInitialPlayer, chessInitialCoTAI1, chessInitialCoTAI2, chessInitialGameStatus, noosphericInitialState, noosphericInitialMapType]);
+  }, [conversationHistory, currentMode, turnCycleCount, addMessageToHistory, activeTheme, typingSpeedMs, matrixSettings, chessInitialFen, chessInitialPlayer, chessInitialCoTAI1, chessInitialCoTAI2, chessInitialGameStatus, noosphericInitialState, noosphericInitialMapType, imageSnapshots]);
 
   const handleLoadChat = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1139,6 +1304,11 @@ const App: React.FC = () => {
         } else if (backupData.mode === AppMode.NOOSPHERIC_CONQUEST_EXE) {
             setTurnCycleCount(0); 
             addMessageToHistory(SYSTEM_SENDER_NAME, `Noospheric Conquest game (Mode: ${backupData.mode}, Map: ${backupData.noosphericMapType || 'Global Conflict'}) loaded from ${file.name}. Resuming...`, 'text-[var(--color-prompt-message)]', false, false);
+        } else if (backupData.mode === AppMode.STORY_WEAVER_EXE) {
+            setTurnCycleCount(0);
+            if (backupData.imageSnapshots) setImageSnapshots(backupData.imageSnapshots);
+            addMessageToHistory(SYSTEM_SENDER_NAME, `Story Weaver session (Mode: ${backupData.mode}) loaded from ${file.name}. Resuming...`, 'text-[var(--color-prompt-message)]', false, false);
+            nextAiToSpeakRef.current = 'STORY_WEAVER'; 
         } else {
             setTurnCycleCount(backupData.turnCycleCount >= MAX_TURN_CYCLES ? 0 : backupData.turnCycleCount);
             if (backupData.turnCycleCount >= MAX_TURN_CYCLES) {
@@ -1207,7 +1377,7 @@ const App: React.FC = () => {
     if (isAwaitingInitialStart) {
       return (
         <>
-          <main className="flex-grow h-full flex flex-col items-center justify-center md:mr-[calc(20rem+0.5rem)]"> 
+          <main className="flex-grow h-full flex flex-col items-center justify-center md:mr-[calc(20rem+0.5rem)] overflow-y-auto min-h-0"> 
             <TerminalWindow
               title={`OVERMIND INTERFACE // Confirm Mode: ${currentMode}`}
               messages={conversationHistory}
@@ -1248,97 +1418,138 @@ const App: React.FC = () => {
       );
     }
 
-    if (currentMode === AppMode.CHESS_SIM_EXE) {
-      return (
-        <ChessModeContainer
-          key={chessResetTokenRef.current}
-          ai1Chat={ai1ChatRef.current}
-          ai2Chat={ai2ChatRef.current}
-          addMessageToHistory={addMessageToHistory}
-          apiKeyMissing={apiKeyMissing}
-          initialFen={chessInitialFen}
-          initialPlayer={chessInitialPlayer}
-          initialCoTAI1={chessInitialCoTAI1}
-          initialCoTAI2={chessInitialCoTAI2}
-          initialGameStatus={chessInitialGameStatus}
-          currentAppMode={currentMode}
-          onModeChange={handleModeChange}
-          activeTheme={activeTheme}
-          isAiReadyForChessFromApp={isAiReadyForChess}
-          appInitializationError={initializationError}
-          onOpenInfoModal={openInfoModal}
-        />
-      );
-    }
-    
-    if (currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) {
-      return (
-        <NoosphericConquestContainer
-          key={`${noosphericResetTokenRef.current}-${noosphericInitialMapType}`} // Include map type in key
-          ai1Chat={ai1ChatRef.current}
-          ai2Chat={ai2ChatRef.current}
-          apiKeyMissing={apiKeyMissing}
-          initialGameState={noosphericInitialState}
-          initialMapType={noosphericInitialMapType} // Pass initial map type
-          isGameStartedFromBackup={noosphericGameStartedFromBackup} // Pass new prop
-          currentAppMode={currentMode}
-          onModeChange={handleModeChange}
-          activeTheme={activeTheme}
-          isAiReadyForNoosphericFromApp={isAiReadyForNoospheric}
-          appInitializationError={initializationError}
-          onOpenInfoModal={openInfoModal}
-        />
-      );
-    }
-
-    // Default: TerminalWindow + ControlsPanel for other modes
-    return (
-      <>
-        <main className="flex-grow h-full md:mr-[calc(20rem+0.5rem)]">
-          <TerminalWindow
-            title={terminalTitle}
-            messages={conversationHistory}
-            isTypingActive={currentTypingMessageId !== null}
-            activeTypingMessageId={currentTypingMessageId}
-            onTypingComplete={handleTypingComplete}
-            isPromptingUser={isAwaitingUserInput}
-            userInputValue={userInputText}
-            onUserInputChange={handleUserInputChange}
-            onUserPromptSubmit={handleUserPromptSubmit}
-            isAwaitingInitialStart={false}
-            typingSpeed={typingSpeedMs}
-            isUniverseSimActivePhase2={isUniverseSimActivePhase2}
-            universeSimInputValue={universeSimInputText}
-            onUniverseSimInputChange={handleUniverseSimInputChange}
-            onUniverseSimInputSubmit={handleUniverseSimInputSubmit}
-            currentMode={currentMode}
-            commandHistory={commandHistory}
-            onCommandHistoryNavigation={handleCommandHistoryNavigation}
-            className="h-full w-full"
+    switch(currentMode) {
+      case AppMode.CHESS_SIM_EXE:
+        return (
+          <ChessModeContainer
+            key={chessResetTokenRef.current}
+            ai1Chat={ai1ChatRef.current}
+            ai2Chat={ai2ChatRef.current}
+            addMessageToHistory={addMessageToHistory}
+            apiKeyMissing={apiKeyMissing}
+            initialFen={chessInitialFen}
+            initialPlayer={chessInitialPlayer}
+            initialCoTAI1={chessInitialCoTAI1}
+            initialCoTAI2={chessInitialCoTAI2}
+            initialGameStatus={chessInitialGameStatus}
+            currentAppMode={currentMode}
+            onModeChange={handleModeChange}
+            activeTheme={activeTheme}
+            isAiReadyForChessFromApp={isAiReadyForChess}
+            appInitializationError={initializationError}
+            onOpenInfoModal={openInfoModal}
           />
-        </main>
-        <ControlsPanel
-          matrixSettings={matrixSettings}
-          onMatrixSettingsChange={handleMatrixSettingsChange}
-          onCopyChat={handleCopyChat}
-          onExportTXT={handleExportTXT}
-          onExportMD={handleExportMD}
-          onBackupChat={handleBackupChat}
-          onLoadChat={handleLoadChat}
-          isAIsTyping={isLoading}
-          activeAIName={activeAINameForLoading}
-          currentMode={currentMode}
-          onModeChange={handleModeChange}
-          onSendUserIntervention={handleSendUserIntervention}
-          currentTypingSpeed={typingSpeedMs}
-          onTypingSpeedChange={handleTypingSpeedChange}
-          onCompleteCurrentMessage={handleCompleteCurrentMessage}
-          activeTheme={activeTheme}
-          onThemeChange={handleThemeChange}
-          onOpenInfoModal={openInfoModal}
-        />
-      </>
-    );
+        );
+      case AppMode.NOOSPHERIC_CONQUEST_EXE:
+        return (
+          <NoosphericConquestContainer
+            key={`${noosphericResetTokenRef.current}-${noosphericInitialMapType}`} 
+            ai1Chat={ai1ChatRef.current}
+            ai2Chat={ai2ChatRef.current}
+            apiKeyMissing={apiKeyMissing}
+            initialGameState={noosphericInitialState}
+            initialMapType={noosphericInitialMapType} 
+            isGameStartedFromBackup={noosphericGameStartedFromBackup} 
+            currentAppMode={currentMode}
+            onModeChange={handleModeChange}
+            activeTheme={activeTheme}
+            isAiReadyForNoosphericFromApp={isAiReadyForNoospheric}
+            appInitializationError={initializationError}
+            onOpenInfoModal={openInfoModal}
+          />
+        );
+      case AppMode.STORY_WEAVER_EXE:
+        return (
+           <>
+            <main className="flex-grow h-full md:mr-[calc(20rem+0.5rem)] overflow-y-auto min-h-0">
+              <StoryWeaverModeContainer
+                genAI={genAI.current}
+                messages={conversationHistory}
+                addMessageToHistory={addMessageToHistory}
+                isLoadingAI={isLoading}
+                activeTypingMessageId={currentTypingMessageId}
+                onTypingComplete={handleTypingComplete}
+                typingSpeed={typingSpeedMs}
+                commandHistory={commandHistory}
+                onCommandHistoryNavigation={handleCommandHistoryNavigation}
+                userPromptInput={userInputText}
+                onUserPromptInputChange={setUserInputText}
+                onUserPromptSubmit={handleUserPromptSubmit}
+                snapshots={imageSnapshots}
+                isGeneratingImage={isGeneratingImage}
+              />
+            </main>
+            <ControlsPanel
+              matrixSettings={matrixSettings}
+              onMatrixSettingsChange={handleMatrixSettingsChange}
+              onCopyChat={handleCopyChat}
+              onExportTXT={handleExportTXT}
+              onExportMD={handleExportMD}
+              onBackupChat={handleBackupChat}
+              onLoadChat={handleLoadChat}
+              isAIsTyping={isLoading}
+              activeAIName={activeAINameForLoading}
+              currentMode={currentMode}
+              onModeChange={handleModeChange}
+              onSendUserIntervention={handleSendUserIntervention}
+              currentTypingSpeed={typingSpeedMs}
+              onTypingSpeedChange={handleTypingSpeedChange}
+              onCompleteCurrentMessage={handleCompleteCurrentMessage}
+              activeTheme={activeTheme}
+              onThemeChange={handleThemeChange}
+              onOpenInfoModal={openInfoModal}
+            />
+          </>
+        );
+      default: 
+        return (
+          <>
+            <main className="flex-grow h-full md:mr-[calc(20rem+0.5rem)] overflow-y-auto min-h-0">
+              <TerminalWindow
+                title={terminalTitle}
+                messages={conversationHistory}
+                isTypingActive={currentTypingMessageId !== null}
+                activeTypingMessageId={currentTypingMessageId}
+                onTypingComplete={handleTypingComplete}
+                isPromptingUser={isAwaitingUserInput && currentMode !== AppMode.UNIVERSE_SIM_EXE}
+                userInputValue={userInputText}
+                onUserInputChange={handleUserInputChange}
+                onUserPromptSubmit={handleUserPromptSubmit}
+                isAwaitingInitialStart={false}
+                typingSpeed={typingSpeedMs}
+                isUniverseSimActivePhase2={isUniverseSimActivePhase2}
+                universeSimInputValue={universeSimInputText}
+                onUniverseSimInputChange={handleUniverseSimInputChange}
+                onUniverseSimInputSubmit={handleUniverseSimInputSubmit}
+                currentMode={currentMode}
+                commandHistory={commandHistory}
+                onCommandHistoryNavigation={handleCommandHistoryNavigation}
+                className="h-full w-full"
+              />
+            </main>
+            <ControlsPanel
+              matrixSettings={matrixSettings}
+              onMatrixSettingsChange={handleMatrixSettingsChange}
+              onCopyChat={handleCopyChat}
+              onExportTXT={handleExportTXT}
+              onExportMD={handleExportMD}
+              onBackupChat={handleBackupChat}
+              onLoadChat={handleLoadChat}
+              isAIsTyping={isLoading}
+              activeAIName={activeAINameForLoading}
+              currentMode={currentMode}
+              onModeChange={handleModeChange}
+              onSendUserIntervention={handleSendUserIntervention}
+              currentTypingSpeed={typingSpeedMs}
+              onTypingSpeedChange={handleTypingSpeedChange}
+              onCompleteCurrentMessage={handleCompleteCurrentMessage}
+              activeTheme={activeTheme}
+              onThemeChange={handleThemeChange}
+              onOpenInfoModal={openInfoModal}
+            />
+          </>
+        );
+    }
   };
 
 
@@ -1357,7 +1568,9 @@ const App: React.FC = () => {
       )}
       <div className={`fixed inset-0 p-2 md:p-4 z-10 ${apiKeyMissing ? 'pt-16 md:pt-20' : ''}
                      flex flex-col
-                     ${(currentMode === AppMode.CHESS_SIM_EXE && !isAwaitingInitialStart) || (currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE && !isAwaitingInitialStart) ? '' : 'md:flex-row'}`}>
+                     ${(currentMode === AppMode.CHESS_SIM_EXE && !isAwaitingInitialStart) || 
+                       (currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE && !isAwaitingInitialStart)
+                       ? '' : 'md:flex-row'}`}>
         {renderAppContent()}
       </div>
       {isInfoModalOpen && MODE_INFO_CONTENT[currentMode] && (
@@ -1368,7 +1581,7 @@ const App: React.FC = () => {
       )}
       <div className="fixed bottom-1 left-2 text-xs text-[var(--color-text-muted)] z-30" aria-live="off">FPS: {fps}</div>
       <div id="chess-mode-container-data" style={{ display: 'none' }}></div>
-      <div id="noospheric-conquest-container-data" style={{ display: 'none' }}></div> {/* For Noospheric data */}
+      <div id="noospheric-conquest-container-data" style={{ display: 'none' }}></div> 
     </>
   );
 };

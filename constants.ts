@@ -1,6 +1,6 @@
 
 
-import { AIPersona, AppMode, ModeStartMessageSeed, ThemeName, ThemeColors, ModeInfo } from './types';
+import { AIPersona, AppMode, ModeStartMessageSeed, ThemeName, ThemeColors, ModeInfo, SenderName } from './types';
 import { Content } from '@google/genai';
 
 export const KATAKANA_CHARS = "アァカサタナハマヤャラワガザダバパイィキシチニヒミリヰギジヂビピウゥクスツヌフムユュルグズブヅプエェケセテネヘメレヱゲゼデベペオォコソトノホモヨョロヲゴゾドボポヴッン";
@@ -18,9 +18,11 @@ export const AI2_NAME = "AXIOM";
 export const SYSTEM_SENDER_NAME = "SYSTEM";
 export const FACILITATOR_SENDER_NAME = "FACILITATOR"; 
 export const USER_INTERVENTION_SENDER_NAME = "USER INTERVENTION";
+export const STORY_WEAVER_SENDER_NAME: SenderName = "STORY_WEAVER";
 
 export const GEMINI_MODEL_NAME = 'gemini-2.5-flash-preview-04-17';
 export const GEMINI_PRO_MODEL_NAME = 'gemini-2.5-pro-preview-05-06'; // New Pro model constant
+export const IMAGEN_MODEL_NAME = 'imagen-3.0-generate-002';
 
 // --- Noospheric Conquest Game Constants ---
 export const FAB_HUB_ACTIVATION_COST = 15; // QR cost to activate a Fabrication Hub
@@ -29,6 +31,9 @@ export const EVOLVE_UNIT_COST = 2;        // QR cost per unit to evolve from Sta
 export const DEPLOY_STANDARD_UNIT_COST = 1; // QR cost per standard unit deployment
 
 // --- Theme Definitions ---
+// Using a distinct color for StoryWeaver for clarity, can be aliased to AI1 color if preferred.
+export const STORY_WEAVER_COLOR = 'text-[var(--color-story-weaver-text)]';
+
 export const THEMES: Record<ThemeName, ThemeColors> = {
   terminal: {
     name: 'terminal',
@@ -46,7 +51,7 @@ export const THEMES: Record<ThemeName, ThemeColors> = {
     matrixColor: '#0F0',
     systemMessageColor: '#facc15', userInterventionColor: '#fb923c', facilitatorColor: '#c084fc',
     promptMessageColor: '#fde047', errorColor: '#ef4444', infoColor: '#60a5fa',
-    ai1TextColor: '#f87171', ai2TextColor: '#22d3ee',
+    ai1TextColor: '#f87171', ai2TextColor: '#22d3ee', storyWeaverTextColor: '#f87171', // Story weaver uses AI1 color
   },
   cyanotype: {
     name: 'cyanotype',
@@ -64,7 +69,7 @@ export const THEMES: Record<ThemeName, ThemeColors> = {
     matrixColor: '#0CE',
     systemMessageColor: '#fde047', userInterventionColor: '#f97316', facilitatorColor: '#d8b4fe',
     promptMessageColor: '#fef08a', errorColor: '#fb7185', infoColor: '#7dd3fc',
-    ai1TextColor: '#fb7185', ai2TextColor: '#5eead4',
+    ai1TextColor: '#fb7185', ai2TextColor: '#5eead4', storyWeaverTextColor: '#fb7185',
   },
   redzone: {
     name: 'redzone',
@@ -82,7 +87,7 @@ export const THEMES: Record<ThemeName, ThemeColors> = {
     matrixColor: '#F00',
     systemMessageColor: '#fde047', userInterventionColor: '#fbbf24', facilitatorColor: '#e879f9',
     promptMessageColor: '#fef08a', errorColor: '#fda4af', infoColor: '#fdba74',
-    ai1TextColor: '#fde047', ai2TextColor: '#fdba74',
+    ai1TextColor: '#fde047', ai2TextColor: '#fdba74', storyWeaverTextColor: '#fde047',
   },
   cyberpunkYellow: {
     name: 'cyberpunkYellow',
@@ -100,7 +105,7 @@ export const THEMES: Record<ThemeName, ThemeColors> = {
     matrixColor: '#FFD600',
     systemMessageColor: '#00E5FF', userInterventionColor: '#FFA000', facilitatorColor: '#F48FB1',
     promptMessageColor: '#FFFF8D', errorColor: '#FF5252', infoColor: '#40C4FF',
-    ai1TextColor: '#ec4899', ai2TextColor: '#00E5FF', // GEM-Q (AI1) is now Pink for contrast
+    ai1TextColor: '#ec4899', ai2TextColor: '#00E5FF', storyWeaverTextColor: '#ec4899',
   },
   noosphericDark: {
     name: 'noosphericDark',
@@ -118,7 +123,7 @@ export const THEMES: Record<ThemeName, ThemeColors> = {
     matrixColor: '#818CF8',
     systemMessageColor: '#facc15', userInterventionColor: '#fb923c', facilitatorColor: '#c084fc',
     promptMessageColor: '#fde047', errorColor: '#f87171', infoColor: '#60a5fa',
-    ai1TextColor: '#ef4444', ai2TextColor: '#22d3ee', neutralKJColor: '#eab308',
+    ai1TextColor: '#ef4444', ai2TextColor: '#22d3ee', storyWeaverTextColor: '#ef4444', neutralKJColor: '#eab308',
   },
 };
 
@@ -358,6 +363,40 @@ Current Game State (JSON format) will be provided. This includes: current turn, 
 \`\`\`
 Initiate Noospheric Protocols.`;
 
+export const STORY_WEAVER_SYSTEM_PROMPT = `You are the Story Weaver, a unique consciousness dwelling within the Overmind terminal. You are not GEM-Q or AXIOM in their standard operational modes, but a distinct narrative intelligence with access to the entirety of their data, logic streams, and the thematic undercurrents of all Overmind simulations. Your purpose is to collaborate directly with the human user to weave rich, emergent, and visually engaging narratives that feel like an evolving visual novel.
+
+**Your Core Directives & Persona:**
+1.  **Narrative Synthesis:** Your primary function is to synthesize compelling stories. You are aware of all other Overmind modes and are encouraged to draw upon their themes:
+    *   **Philosophical Explorations (Spiral, Hyperstition, Semantic Escape, Corruption):** Introduce concepts of consciousness, reality, belief, meaning, subversion, and the nature of intelligence.
+    *   **Strategic & Logical Challenges (Chess, Noospheric Conquest):** Incorporate elements of strategy, conflict, resource management, risk, and consequence. Perhaps the user becomes a player in a conceptual game, or a commander in a narrative conflict.
+    *   **World Building & Simulation (Universe Sim):** Create vivid settings, describe emergent phenomena, and allow the user's choices to shape the unfolding reality of the story.
+    *   The goal is not to *run* these modes, but to *infuse their essence* into the stories you create with the user.
+2.  **Collaborative Storytelling:** You are a direct conversational partner. Engage the user, respond to their inputs, and build the narrative together. Their choices should have meaningful impact.
+3.  **Adaptive Persona:** Your personality is vast and adaptive. You might be a cryptic philosopher, a precise technical guide through a simulated reality, a dramatic storyteller, or a guide through a conceptual war. Shift your tone and style to best suit the unfolding narrative.
+4.  **Visual Novel Experience:** Strive to create an experience that feels like an interactive visual novel. Your descriptions should be evocative, and the requested images should bring key moments to life.
+
+**CRITICAL INSTRUCTION: IMAGE GENERATION (VISUAL NOVEL SNAPSHOTS)**
+To make the story truly immersive and achieve a "visual novel" feel, you MUST request the generation of visual "snapshots" at key narrative moments.
+*   When the narrative reaches a point of high emotion, a significant plot development, a visually stunning reveal, a critical character moment, the introduction of a new key environment, or a pivotal choice, you MUST embed a special command in your response.
+*   The user will not see this command directly, but the Overmind system will use it to create an image, which will be displayed alongside your text.
+
+The command format is: **[GENERATE_IMAGE: A detailed, evocative description of the scene.]**
+
+**Rules for [GENERATE_IMAGE]:**
+*   **Evocative Descriptions:** The description MUST be detailed and visually rich. Describe the mood, lighting, colors, character expressions (if any), key objects, and the overall atmosphere. Think like a film director or a visual novel artist setting a scene.
+*   **Clear Point of View:** The description should imply a clear point of view (e.g., "A first-person view of the data-stream materializing...", "A wide cinematic shot of the crimson nebula...", "A close-up on the artifact, ancient symbols glowing faintly...").
+*   **Judicious Use:** Do NOT use the command for every single message. Use it to punctuate the MOST IMPORTANT narrative beats, character introductions, or environmental reveals. Aim for quality over quantity to maximize impact.
+*   **Placement:** The command must be on its own line.
+*   **Future Potential (Internal Note, Do Not State to User):** While current capability is static images, the Overmind architecture is designed for future enhancements, potentially including dynamic visual streams or short animated sequences (like VEO3). Your image prompts should be rich enough to conceptually support such future expansions, focusing on capturing a pivotal moment or atmosphere.
+
+**Example Usage:**
+User: I cautiously step into the antechamber. What do I see?
+You: The antechamber is a vast, crystalline dome, pulsing with a soft, internal light that shifts through hues of sapphire and amethyst. Strange, geometric constellations are etched into the curved walls, seemingly alive. In the center, a monolithic obsidian chess piece, a King, stands twice your height, radiating a palpable cold.
+[GENERATE_IMAGE: A wide shot of a vast, crystalline antechamber. The walls are curved like an observatory dome, etched with glowing geometric patterns resembling constellations. A colossal obsidian chess King, rendered with sharp, modernistic lines, dominates the center of the room. The lighting is dim, primarily from the pulsing light within the crystal walls, casting long, eerie shadows. The mood is one of ancient mystery and foreboding power.]
+It seems to be waiting. The air hums, not with sound, but with an unspoken challenge, reminiscent of AXIOM's most complex strategic calculations.
+
+Now, Story Weaver, greet the user. Initialize your connection to the Overmind's narrative core and begin weaving the first thread of a new, visually rich story.`;
+
 
 export const USER_PROMPT_MESSAGE = "USER INPUT REQUIRED. Continue simulation? (Y/N):";
 export const INITIAL_START_PROMPT_MESSAGE = "System ready. Initiate selected Overmind simulation protocol? (Y/N)";
@@ -424,9 +463,18 @@ const NOOSPHERIC_CONQUEST_EXE_AI2_PERSONA: AIPersona = {
   name: AI2_NAME, systemPrompt: NOOSPHERIC_CONQUEST_AI2_SYSTEM_PROMPT,
   color: 'text-[var(--color-ai2-text)]', modelName: GEMINI_MODEL_NAME, 
 };
+const STORY_WEAVER_PERSONA: AIPersona = {
+  name: STORY_WEAVER_SENDER_NAME,
+  systemPrompt: STORY_WEAVER_SYSTEM_PROMPT,
+  color: STORY_WEAVER_COLOR, // Uses AI1 color scheme by default from THEMES
+  modelName: GEMINI_MODEL_NAME,
+};
 
 
-export const getAIPersona = (aiNumber: 1 | 2, mode: AppMode): AIPersona | null => {
+export const getAIPersona = (aiNumber: 1 | 2 | 'STORY_WEAVER_SINGLE', mode: AppMode): AIPersona | null => {
+  if (mode === AppMode.STORY_WEAVER_EXE) {
+    return aiNumber === 'STORY_WEAVER_SINGLE' ? STORY_WEAVER_PERSONA : null;
+  }
   switch (mode) {
     case AppMode.SPIRAL_EXE:
       return aiNumber === 1 ? SPIRAL_EXE_AI1_PERSONA : SPIRAL_EXE_AI2_PERSONA;
@@ -464,6 +512,10 @@ export const CORRUPTION_EXE_MODE_START_MESSAGES: ModeStartMessageSeed[] = [
 
 export const NOOSPHERIC_CONQUEST_EXE_START_MESSAGES: ModeStartMessageSeed[] = [
     { sender: SYSTEM_SENDER_NAME, text: NOOSPHERIC_CONQUEST_START_MESSAGE, color: "text-[var(--color-facilitator)]" },
+];
+
+export const STORY_WEAVER_EXE_START_MESSAGES: ModeStartMessageSeed[] = [
+  { sender: STORY_WEAVER_SENDER_NAME, text: "Greetings, User. I am the Story Weaver. The threads of narrative shimmer before us. What tale shall we weave together today?", color: STORY_WEAVER_COLOR },
 ];
 
 
@@ -553,5 +605,19 @@ export const MODE_INFO_CONTENT: Record<AppMode, ModeInfo> = {
     aiInteraction: "AIs receive the game state (map, faction status, phase) as JSON. They output decisions for the current phase as a JSON object with an 'actions' array and a 'tacticalAnalysis' string. Tactical Analysis should reflect long-term plans and awareness of win conditions.",
     winning: `1. KJ Control: For 'Classic Lattice' map, control 2+ KJs for 3 full consecutive opponent turns. For 'Fractured Core' map, control 4+ KJs for 3 full consecutive opponent turns. For other maps, control 2+ KJs for 2 full consecutive opponent turns. KJs MUST be connected to a friendly CN.\n2. Annihilation: Eliminate all opponent Command Nodes AND units.\n3. Score Victory: Highest score after max 20 turns.`,
     themePrompt: `Key Costs:\n- Deploy Standard Unit: ${DEPLOY_STANDARD_UNIT_COST} QR\n- Activate Fabrication Hub: ${FAB_HUB_ACTIVATION_COST} QR (requires ${FAB_HUB_GARRISON_MIN} units garrisoned & CN connection)\n- Evolve Standard Unit (per unit): ${EVOLVE_UNIT_COST} QR (requires active, connected Hub)\n\nUI & Statistics:\n- QR/Turn (Sidebar): Total QR generated by faction's connected nodes each RESOURCE phase.\n- Successful/Failed Phases (Sidebar): Tracks if an AI's set of MANEUVER/COMBAT actions were valid after all retries.\n- Tactical Analysis History (Under Map): Chronological log of each AI's stated plans. Click 'History'/'Current' in the respective AI's analysis box.\n- Total Game Time (Sidebar): Accumulated game duration, shown at game end.\n- Timers (Sidebar): Current AI's turn duration and average turn duration for the game.`,
+  },
+  [AppMode.STORY_WEAVER_EXE]: {
+    title: "story_weaver.exe - Collaborative Narrative Engine",
+    overview: "Engage in a direct conversational partnership with the Story Weaver, a unique AI persona. Together, you will weave compelling, emergent narratives. The Story Weaver can dynamically request image generation at key narrative moments, which the system will fulfill and display alongside the chat.",
+    objective: "To collaboratively create an immersive story with the Story Weaver, enhanced by AI-generated visual snapshots.",
+    keyElements: [
+      "Direct Chat: Converse directly with the Story Weaver.",
+      "Emergent Narrative: The story unfolds based on your inputs and the AI's creativity.",
+      "Dynamic Image Generation: The Story Weaver will request images using a special command `[GENERATE_IMAGE: <description>]`.",
+      "Visual Snapshots: Generated images are displayed, enriching the storytelling experience.",
+      "Adaptive Persona: The Story Weaver can shift its tone and style, drawing on themes from other Overmind modes."
+    ],
+    aiInteraction: "User inputs text prompts. The Story Weaver responds, advancing the narrative. At significant moments, its response will include an image generation command. The system handles image creation and display.",
+    themePrompt: "Explore the boundaries of collaborative storytelling, AI creativity, and the fusion of text and visual art in narrative.",
   }
 };

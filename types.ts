@@ -10,6 +10,7 @@ export enum AppMode {
   CHESS_SIM_EXE = "chess-sim.exe",
   CORRUPTION_EXE = "corruption.exe",
   NOOSPHERIC_CONQUEST_EXE = "noospheric-conquest.exe",
+  STORY_WEAVER_EXE = "story_weaver.exe", // Added
 }
 
 export interface MatrixSettings {
@@ -38,6 +39,12 @@ export interface ChatMessage {
 
 export type ModeStartMessageSeed = Omit<ChatMessage, 'id' | 'timestamp' | 'isUser'>;
 
+export interface ImageSnapshot {
+  id: string;
+  url: string;
+  prompt: string;
+  timestamp: number;
+}
 
 export interface ConversationBackup {
   version: string;
@@ -49,7 +56,7 @@ export interface ConversationBackup {
   };
   conversationHistory: ChatMessage[];
   turnCycleCount: number;
-  nextAiToSpeak: 'AI1' | 'AI2';
+  nextAiToSpeak: 'AI1' | 'AI2' | 'STORY_WEAVER';
   themeName?: ThemeName; // Save active theme with backup
   typingSpeedMs?: number; // Save typing speed
   matrixSettings?: Omit<MatrixSettings, 'matrixColor'>; // Save relevant matrix settings
@@ -62,6 +69,8 @@ export interface ConversationBackup {
   // Noospheric Conquest specific state for backup
   noosphericGameState?: NoosphericGameState;
   noosphericMapType?: NoosphericMapType; // Added for map type backup
+  // Story Weaver specific state for backup
+  imageSnapshots?: ImageSnapshot[];
 }
 
 export type InterventionTarget = 'CHAT_FLOW' | 'AI1' | 'AI2';
@@ -119,6 +128,7 @@ export interface ThemeColors {
   
   ai1TextColor: string;
   ai2TextColor: string;
+  storyWeaverTextColor?: string; // Added for Story Weaver
   neutralKJColor?: string; // Optional, for Noospheric mode KJs
 }
 
@@ -319,3 +329,13 @@ export interface ModeInfo {
   winning?: string; 
   themePrompt?: string; 
 }
+
+// Add SenderName type if not already fully defined elsewhere
+import { AI1_NAME, AI2_NAME, SYSTEM_SENDER_NAME, USER_INTERVENTION_SENDER_NAME, FACILITATOR_SENDER_NAME } from './constants';
+export type SenderName =
+  | typeof AI1_NAME
+  | typeof AI2_NAME
+  | typeof SYSTEM_SENDER_NAME
+  | typeof USER_INTERVENTION_SENDER_NAME
+  | typeof FACILITATOR_SENDER_NAME
+  | "STORY_WEAVER";

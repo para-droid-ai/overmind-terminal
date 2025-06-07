@@ -57,6 +57,7 @@
       
       --color-ai1-text: #f87171; /* red-400 */
       --color-ai2-text: #22d3ee; /* cyan-400 */
+      --color-story-weaver-text: var(--color-ai1-text); /* Story Weaver uses AI1 color by default */
     }
 
     /* Theme: Cyanotype */
@@ -105,6 +106,7 @@
 
       --color-ai1-text: #fb7185; /* rose-400 */
       --color-ai2-text: #5eead4; /* teal-300 */
+      --color-story-weaver-text: var(--color-ai1-text);
     }
 
     /* Theme: Redzone */
@@ -152,6 +154,7 @@
       
       --color-ai1-text: #fde047; /* yellow-300 for contrast */
       --color-ai2-text: #fdba74; /* orange-300 for contrast */
+      --color-story-weaver-text: var(--color-ai1-text);
     }
 
     /* Theme: Cyberpunk Yellow */
@@ -205,6 +208,7 @@
       
       --color-ai1-text: #ec4899; 
       --color-ai2-text: #00E5FF;
+      --color-story-weaver-text: var(--color-ai1-text);
     }
 
     /* Theme: Noospheric Dark */
@@ -258,6 +262,7 @@
       
       --color-ai1-text: #ef4444; /* red-500 (GEM-Q Red) */
       --color-ai2-text: #22d3ee; /* cyan-400 (AXIOM Cyan) */
+      --color-story-weaver-text: var(--color-ai1-text);
       --color-neutral-kj: #eab308; /* yellow-500 (KJs) */
     }
 
@@ -266,6 +271,11 @@
       font-family: 'Courier New', Courier, monospace;
       background-color: var(--color-bg-page); 
       color: var(--color-text-base);
+      height: 100vh; /* Ensure body takes full viewport height */
+      margin: 0; /* Remove default body margin */
+    }
+    #root {
+        height: 100%; /* Make root div take full height of body */
     }
     /* Custom scrollbar for webkit browsers */
     ::-webkit-scrollbar {
@@ -312,6 +322,37 @@
     .focus-ring-accent:focus-visible {
       box-shadow: 0 0 0 2px var(--color-bg-page), 0 0 0 4px var(--color-accent-400);
     }
+
+    /* Breathing Border Animation */
+    @keyframes breathing-border {
+      0%, 100% {
+        box-shadow: 0 0 3px 0px var(--color-primary-500), inset 0 0 2px 0px var(--color-primary-500);
+      }
+      50% {
+        box-shadow: 0 0 10px 2px var(--color-primary-500), inset 0 0 5px 1px var(--color-primary-500);
+      }
+    }
+    .animate-breathing-border {
+      animation: breathing-border 3s ease-in-out infinite;
+    }
+
+    /* Custom scrollbar for thumbnail history (can be same as log-display or different) */
+    .thumbnail-scrollbar::-webkit-scrollbar {
+      height: 6px; /* More slender for horizontal scroll */
+      width: 6px;
+    }
+    .thumbnail-scrollbar::-webkit-scrollbar-thumb {
+      background: var(--color-scrollbar-thumb-hover); /* Slightly more prominent for interaction cue */
+      border-radius: 3px;
+    }
+    .thumbnail-scrollbar::-webkit-scrollbar-track {
+      background: rgba(0,0,0,0.3); /* Darker track for thumbnails */
+    }
+    .thumbnail-scrollbar {
+        scrollbar-width: thin;
+        scrollbar-color: var(--color-scrollbar-thumb-hover) rgba(0,0,0,0.3);
+    }
+
   </style>
 <script type="importmap">
 {

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { MatrixSettings, AppMode, InterventionTarget, ThemeName } from '../types';
 import { AI1_NAME, AI2_NAME, MIN_TYPING_SPEED_MS, MAX_TYPING_SPEED_MS, DEFAULT_TYPING_SPEED_MS, UNIVERSE_SIM_PANEL_PLACEHOLDER_TEXT, THEMES } from '../constants';
@@ -68,7 +69,12 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({
   };
 
   const handleInterventionSendClick = () => {
-    if (userInterventionText.trim() && currentMode !== AppMode.UNIVERSE_SIM_EXE && currentMode !== AppMode.CHESS_SIM_EXE && currentMode !== AppMode.NOOSPHERIC_CONQUEST_EXE) {
+    if (userInterventionText.trim() && 
+        currentMode !== AppMode.UNIVERSE_SIM_EXE && 
+        currentMode !== AppMode.CHESS_SIM_EXE && 
+        currentMode !== AppMode.NOOSPHERIC_CONQUEST_EXE &&
+        currentMode !== AppMode.STORY_WEAVER_EXE
+       ) {
       onSendUserIntervention(userInterventionText.trim(), interventionTarget);
       setUserInterventionText("");
     }
@@ -96,18 +102,20 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({
   };
 
 
-  const awaitingResponseText = currentMode === AppMode.UNIVERSE_SIM_EXE 
-    ? `Awaiting response from ${AI1_NAME}...` 
+  const awaitingResponseText = currentMode === AppMode.UNIVERSE_SIM_EXE || currentMode === AppMode.STORY_WEAVER_EXE
+    ? `Awaiting response from ${currentMode === AppMode.STORY_WEAVER_EXE ? "Story Weaver" : AI1_NAME}...` 
     : (activeAIName ? `Awaiting response from ${activeAIName}...` : "AI Awaiting Response...");
 
-  const isAIToAIMode = currentMode !== AppMode.UNIVERSE_SIM_EXE && currentMode !== AppMode.CHESS_SIM_EXE && currentMode !== AppMode.NOOSPHERIC_CONQUEST_EXE;
+  const isAIToAIMode = currentMode !== AppMode.UNIVERSE_SIM_EXE && 
+                       currentMode !== AppMode.CHESS_SIM_EXE && 
+                       currentMode !== AppMode.NOOSPHERIC_CONQUEST_EXE &&
+                       currentMode !== AppMode.STORY_WEAVER_EXE;
+  
+  const showUserInterventionPanel = currentMode !== AppMode.UNIVERSE_SIM_EXE && 
+                                    currentMode !== AppMode.CHESS_SIM_EXE && 
+                                    currentMode !== AppMode.NOOSPHERIC_CONQUEST_EXE &&
+                                    currentMode !== AppMode.STORY_WEAVER_EXE;
 
-  // Filter out modes that have their own dedicated UIs and are not selected via this dropdown primarily
-  const availableModesInDropdown = Object.values(AppMode).filter(mode => 
-    mode !== AppMode.UNIVERSE_SIM_EXE && 
-    mode !== AppMode.CHESS_SIM_EXE &&
-    mode !== AppMode.NOOSPHERIC_CONQUEST_EXE
-  ); 
 
   return (
     <aside 
@@ -145,7 +153,6 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({
             onChange={(e) => onModeChange(e.target.value as AppMode)}
             className="w-full bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-2 rounded-sm focus-ring-accent text-xs"
           >
-            {/* Always list all modes, but disable those not meant for direct selection here if they are active */}
             {Object.values(AppMode).map(mode => (
               <option 
                 key={mode} 
@@ -153,7 +160,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({
                 disabled={
                   (mode === AppMode.UNIVERSE_SIM_EXE && currentMode === AppMode.UNIVERSE_SIM_EXE) ||
                   (mode === AppMode.CHESS_SIM_EXE && currentMode === AppMode.CHESS_SIM_EXE) ||
-                  (mode === AppMode.NOOSPHERIC_CONQUEST_EXE && currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE)
+                  (mode === AppMode.NOOSPHERIC_CONQUEST_EXE && currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) ||
+                  (mode === AppMode.STORY_WEAVER_EXE && currentMode === AppMode.STORY_WEAVER_EXE)
                 }
               >
                 {mode}
@@ -163,22 +171,28 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({
         </div>
         <hr className="border-[var(--color-border-strong)] opacity-50 my-2"/>
 
-        {(currentMode === AppMode.UNIVERSE_SIM_EXE || currentMode === AppMode.CHESS_SIM_EXE || currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE) ? (
+        { (currentMode === AppMode.UNIVERSE_SIM_EXE || 
+           currentMode === AppMode.CHESS_SIM_EXE || 
+           currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE ||
+           currentMode === AppMode.STORY_WEAVER_EXE) ? (
           <div className="control-group space-y-2 text-center p-3 border border-dashed border-[var(--color-border-strong)] rounded-md">
             <h4 className="text-md font-semibold text-[var(--color-text-heading)]">
               {currentMode === AppMode.UNIVERSE_SIM_EXE ? "GEODESIC SYSTEMS" : 
                currentMode === AppMode.CHESS_SIM_EXE ? "CHESS SIMULATION ACTIVE" :
-               "NOOSPHERIC CONQUEST ACTIVE"}
+               currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE ? "NOOSPHERIC CONQUEST ACTIVE" :
+               "STORY WEAVER ACTIVE"}
             </h4>
             {currentMode === AppMode.UNIVERSE_SIM_EXE && <RotatingGlobe />}
             <p className="text-xs text-[var(--color-text-muted)] italic mt-1">
               {currentMode === AppMode.UNIVERSE_SIM_EXE ? UNIVERSE_SIM_PANEL_PLACEHOLDER_TEXT :
                currentMode === AppMode.CHESS_SIM_EXE ? "Chess game controls are in the main view." :
-               "Noospheric Conquest controls are in the main view."}
+               currentMode === AppMode.NOOSPHERIC_CONQUEST_EXE ? "Noospheric Conquest controls are in the main view." :
+               "Story Weaver interaction is via the main terminal."}
             </p>
-            {currentMode === AppMode.UNIVERSE_SIM_EXE && <p className="text-xs text-[var(--color-prompt-message)] mt-1">Input commands directly into the terminal.</p>}
+            {(currentMode === AppMode.UNIVERSE_SIM_EXE || currentMode === AppMode.STORY_WEAVER_EXE) && 
+             <p className="text-xs text-[var(--color-prompt-message)] mt-1">Input commands/dialogue directly into the terminal.</p>}
           </div>
-        ) : (
+        ) : ( // For other modes that might use the intervention panel
           <div className="control-group space-y-1">
             <h4 className="text-md font-semibold text-[var(--color-text-heading)]">User Intervention</h4>
             <textarea
