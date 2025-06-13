@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import { ChatMessage, AppMode } from '../types'; 
 import { SYSTEM_SENDER_NAME, AI1_NAME, USER_INTERVENTION_SENDER_NAME, FACILITATOR_SENDER_NAME, USER_PROMPT_MESSAGE, INITIAL_START_PROMPT_MESSAGE } from '../constants';
@@ -25,14 +26,18 @@ interface TerminalWindowProps {
   onUniverseSimInputSubmit?: () => void;
   currentMode: AppMode;
   commandHistory: string[]; 
-  onCommandHistoryNavigation: (direction: 'up' | 'down', inputType: 'initial' | 'prompt' | 'universeSim') => void; 
+  onCommandHistoryNavigation: (direction: 'up' | 'down', inputType: 'initial' | 'prompt' | 'universeSim' | 'chimera') => void; 
+  isAppAiProcessing?: boolean;
+  appProcessingAiName?: string | null;
+  isAwaitingChimeraContinuation?: boolean;
+  storyWeaverHeaderContent?: React.ReactNode; // Added prop
 }
 
 const TerminalWindow: React.FC<TerminalWindowProps> = ({ 
   title, 
   messages, 
   className = "",
-  isTypingActive = false,
+  isTypingActive = false, // This prop indicates if the typing animation should be active for activeTypingMessageId
   activeTypingMessageId = null,
   onTypingComplete,
   isPromptingUser = false,
@@ -52,6 +57,10 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
   currentMode,
   commandHistory,
   onCommandHistoryNavigation,
+  isAppAiProcessing,      // New: Global AI processing state
+  appProcessingAiName,    // New: Name of AI globally processing
+  isAwaitingChimeraContinuation, // Specific for Chimera mode
+  storyWeaverHeaderContent // Destructured prop
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const regularInputRef = useRef<HTMLInputElement>(null); 
@@ -193,12 +202,12 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
   useEffect(() => {
     if (isUniverseSimActivePhase2 && universeSimInputRef.current) {
       universeSimInputRef.current.focus();
-    } else if (isPromptingUser && regularInputRef.current && currentMode !== AppMode.UNIVERSE_SIM_EXE) { 
-      regularInputRef.current.focus();
-    } else if (isAwaitingInitialStart && initialStartInputRef.current) { 
+    } else if (isAwaitingInitialStart && initialStartInputRef.current) {
       initialStartInputRef.current.focus();
+    } else if (isPromptingUser && regularInputRef.current) {
+      regularInputRef.current.focus();
     }
-  }, [isPromptingUser, isAwaitingInitialStart, isUniverseSimActivePhase2, currentMode]);
+  }, [isPromptingUser, isAwaitingInitialStart, isUniverseSimActivePhase2]);
 
   const handleRegularInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter' && onUserPromptSubmit) {
@@ -255,17 +264,35 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
     return `${sender}:~$ `;
   }
 
-  const activeTypingMessageDetails = isTypingActive && activeTypingMessageId ? displayedMessages.find(msg => msg.id === activeTypingMessageId) : null;
-  const typingAIName = activeTypingMessageDetails ? activeTypingMessageDetails.sender : null;
-
   const getMessageColorClass = (msg: ChatMessage) => {
-    if (msg.color) return msg.color; // If a specific class is provided (e.g. from AIPersona)
+    if (msg.color) return msg.color; 
     if (msg.sender === SYSTEM_SENDER_NAME) return 'text-[var(--color-system-message)]';
     if (msg.sender === USER_INTERVENTION_SENDER_NAME) return 'text-[var(--color-user-intervention)]';
     if (msg.sender === FACILITATOR_SENDER_NAME) return 'text-[var(--color-facilitator)]';
-    return 'text-[var(--color-text-muted)]'; // Default
+    return 'text-[var(--color-text-muted)]'; 
   };
 
+  const typingMessageDetails = (isTypingActive && activeTypingMessageId) ? displayedMessages.find(msg => msg.id === activeTypingMessageId) : null;
+  const senderOfTypingMessage = typingMessageDetails?.sender;
+  
+  const originalMessageBeingTyped = messages.find(m => m.id === activeTypingMessageId);
+  const isCurrentlyMidTyping = isTypingActive && activeTypingMessageId && senderOfTypingMessage &&
+                              !fullyTypedMessages.has(activeTypingMessageId) &&
+                              typingMessageDetails && originalMessageBeingTyped &&
+                              typingMessageDetails.text.length < originalMessageBeingTyped.text.length;
+
+  let statusMessageElement = null;
+  if (isAppAiProcessing && appProcessingAiName && !isCurrentlyMidTyping) {
+      statusMessageElement = <span className="text-xs text-[var(--color-accent-400)] animate-pulse">{appProcessingAiName} is processing...</span>;
+  } else if (isTypingActive && activeTypingMessageId && senderOfTypingMessage && !fullyTypedMessages.has(activeTypingMessageId)) {
+      let showTypingIndicator = !isPromptingUser && !isAwaitingInitialStart && !isUniverseSimActivePhase2;
+      if (currentMode === AppMode.CHIMERA_EXE && isAwaitingChimeraContinuation) {
+          showTypingIndicator = false;
+      }
+      if (showTypingIndicator) {
+           statusMessageElement = <span className="text-xs text-[var(--color-accent-300)] animate-pulse">{senderOfTypingMessage} is typing...</span>;
+      }
+  }
 
   return (
     <section
@@ -278,9 +305,14 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
     >
       <header className="window-header bg-[var(--color-primary-600)] bg-opacity-60 text-[var(--color-text-heading)] p-2 border-b-2 border-[var(--color-border-base)] flex justify-between items-center">
         <h2 className="text-sm font-bold tracking-wider uppercase">{title}</h2>
-        {isTypingActive && activeTypingMessageId && typingAIName && !isPromptingUser && !fullyTypedMessages.has(activeTypingMessageId) && (
-          <span className="text-xs text-[var(--color-accent-300)] animate-pulse">{typingAIName} is typing...</span>
-        )}
+        <div className="flex items-center space-x-2">
+          {statusMessageElement}
+          {currentMode === AppMode.STORY_WEAVER_EXE && storyWeaverHeaderContent && (
+            <div className="story-weaver-header-actions">
+              {storyWeaverHeaderContent}
+            </div>
+          )}
+        </div>
       </header>
       <div
         ref={contentRef}
@@ -318,7 +350,7 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
             </div>
           </div>
         )}
-        {isPromptingUser && !isAwaitingInitialStart && currentMode !== AppMode.UNIVERSE_SIM_EXE && !isUniverseSimActivePhase2 && ( 
+        {isPromptingUser && !isAwaitingInitialStart && !isUniverseSimActivePhase2 && ( 
           <div className="mt-auto pt-2 border-t-2 border-[var(--color-primary-700)] border-dashed">
             <p className="text-[var(--color-prompt-message)] mb-1">{USER_PROMPT_MESSAGE}</p>
             <div className="flex items-center">

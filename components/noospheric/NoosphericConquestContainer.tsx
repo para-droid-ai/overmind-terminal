@@ -1,13 +1,12 @@
 
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Chat, GenerateContentResponse } from '@google/genai';
 import { 
     AppMode, ThemeName, NoosphericGameState, NoosphericPlayerId, 
     NoosphericFaction, NoosphericNodeData, NoosphericPhase, SystemLogEntry, BattleLogEntry, NoosphericAIResponse,
-    NoosphericMapType, BattleReportData, DiceRollDetail, TacticalAnalysisEntry
+    NoosphericMapType, BattleReportData, TacticalAnalysisEntry, DiceRollDetail
 } from '../../types';
-import { AI1_NAME, AI2_NAME, SYSTEM_SENDER_NAME, THEMES, NOOSPHERIC_CONQUEST_START_MESSAGE, GEMINI_MODEL_NAME, getAIPersona, FAB_HUB_ACTIVATION_COST, FAB_HUB_GARRISON_MIN, EVOLVE_UNIT_COST } from '../../constants';
+import { AI1_NAME, AI2_NAME, SYSTEM_SENDER_NAME, THEMES, NOOSPHERIC_CONQUEST_START_MESSAGE, FAB_HUB_ACTIVATION_COST, FAB_HUB_GARRISON_MIN, EVOLVE_UNIT_COST, DEPLOY_STANDARD_UNIT_COST } from '../../constants';
 import NoosphericMapDisplay from './NoosphericMapDisplay';
 import NoosphericSidebar from './NoosphericSidebar';
 import BattleReportModal from './BattleReportModal'; 
@@ -29,7 +28,7 @@ interface NoosphericConquestContainerProps {
 }
 
 const DEFAULT_MAX_TURNS = 20; 
-const ALL_MAP_TYPES: NoosphericMapType[] = ["Global Conflict", "Twin Peaks", "Classic Lattice", "Fractured Core"];
+const ALL_MAP_TYPES: NoosphericMapType[] = ["Global Conflict", "Twin Peaks", "Classic Lattice", "Fractured Core", "The Seraphim Grid"];
 const AI_DECISION_DELAY_MS = 500;
 const PHASE_ADVANCE_DELAY_MS = 200; 
 const MAX_NOOSPHERIC_RETRY_ATTEMPTS = 2;
@@ -44,13 +43,13 @@ interface FluctuationEvent {
 }
 
 
-const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = ({
+export const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = ({
   ai1Chat,
   ai2Chat,
   apiKeyMissing,
-  initialGameState,
+  initialGameState: propInitialGameState, 
   initialMapType = "Global Conflict",
-  isGameStartedFromBackup = false, 
+  isGameStartedFromBackup: propIsGameStartedFromBackup = false, 
   currentAppMode,
   onModeChange,
   activeTheme,
@@ -59,38 +58,58 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   onOpenInfoModal,
 }) => {
   const [currentMapTypeInternal, setCurrentMapTypeInternal] = useState<NoosphericMapType>(initialMapType);
-  const [isGameStarted, setIsGameStarted] = useState(isGameStartedFromBackup); 
+  
+  const determineInitialFogState = useCallback((igs: NoosphericGameState | undefined): boolean => {
+    if (!igs) {
+      return false; // Default to FoW OFF if no initial state
+    }
+    const fogValue = igs.isFogOfWarActive;
 
-  const createInitialGameState = useCallback((mapType: NoosphericMapType, gameJustStarted: boolean = false): NoosphericGameState => {
-    const mapData = getMapDataByType(mapType);
-    const factionData = calculateInitialFactionData(mapData);
-    let initialMessage = NOOSPHERIC_CONQUEST_START_MESSAGE;
+    if (typeof fogValue === 'boolean') {
+      return fogValue;
+    }
+    if (typeof (fogValue as any) === 'string') { // Handle if it was saved as string "true" / "false"
+      return String(fogValue).toLowerCase() === 'true';
+    }
+    return false; 
+  }, []);
+
+  const [isFogOfWarActive, setIsFogOfWarActive] = useState<boolean>(determineInitialFogState(propInitialGameState));
+  
+  const [isGameStarted, setIsGameStarted] = useState(propIsGameStartedFromBackup && !!propInitialGameState); 
+
+  const createInitialGameState = useCallback((mapType: NoosphericMapType, gameJustStarted: boolean = false, fogOfWar: boolean): NoosphericGameState => {
+    const mapData = getMapDataByType(mapType, fogOfWar); 
+    const factionData = calculateInitialFactionData(mapData); 
+    let initialMessage = `Noospheric Conquest setup for ${mapType} map. Fog of War: ${fogOfWar ? 'ON' : 'OFF'}.`;
     if (gameJustStarted) {
-        initialMessage = `Noospheric Conquest game started on ${mapType} map. Turn 1, FLUCTUATION Phase.`;
+        initialMessage = `Noospheric Conquest game started on ${mapType} map. Fog of War: ${fogOfWar ? 'ON' : 'OFF'}. Turn 1, FLUCTUATION Phase.`;
     }
 
     return {
       turn: 1,
-      currentPhase: 'FLUCTUATION',
+      currentPhase: gameJustStarted ? 'FLUCTUATION' : 'GAME_OVER', 
       activePlayer: 'GEM-Q', 
       mapNodes: mapData, 
       factions: {
-        'GEM-Q': { ...factionData['GEM-Q'], tacticalAnalysis: gameJustStarted ? "Preparing initial strategy..." : "Awaiting game start..." },
-        'AXIOM': { ...factionData['AXIOM'], tacticalAnalysis: gameJustStarted ? "Awaiting opponent's move..." : "Awaiting game start..." },
+        'GEM-Q': { ...factionData['GEM-Q'], tacticalAnalysis: "Awaiting game start..." },
+        'AXIOM': { ...factionData['AXIOM'], tacticalAnalysis: "Awaiting game start..." },
       },
       systemLog: [{ id: `sys-${Date.now()}`, timestamp: new Date().toISOString(), turn: 1, phase: 'FLUCTUATION', message: initialMessage, type: 'EVENT' }],
       battleLog: [],
       mapType: mapType,
       isPaused: false,
       winner: undefined,
+      isFogOfWarActive: fogOfWar,
     };
   }, []);
   
   const [gameState, setGameState] = useState<NoosphericGameState>(
-    initialGameState && initialGameState.mapType === initialMapType 
-      ? initialGameState 
-      : createInitialGameState(initialMapType, isGameStartedFromBackup)
+    propInitialGameState && propInitialGameState.mapType === currentMapTypeInternal && propInitialGameState.isFogOfWarActive === isFogOfWarActive
+      ? propInitialGameState 
+      : createInitialGameState(currentMapTypeInternal, propIsGameStartedFromBackup && !!propInitialGameState, isFogOfWarActive)
   );
+  const gameStateRef = useRef(gameState); 
 
   const [isLoadingAI, setIsLoadingAI] = useState<NoosphericPlayerId | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -111,9 +130,12 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   const [showGemQMainHistory, setShowGemQMainHistory] = useState(false);
   const [showAxiomMainHistory, setShowAxiomMainHistory] = useState(false);
 
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   useEffect(() => {
-    gameIsOverRef.current = gameState.currentPhase === 'GAME_OVER';
+    gameIsOverRef.current = gameState.currentPhase === 'GAME_OVER' && gameState.winner !== undefined;
     if (dataDivRef.current) {
         try {
             dataDivRef.current.dataset.noosphericGameState = JSON.stringify(gameState);
@@ -147,12 +169,25 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         id: `battle-${Date.now()}-${Math.random().toString(36).substring(2,9)}`,
         timestamp: new Date().toISOString(),
     };
-    setGameState(prev => ({
-      ...prev,
-      battleLog: [...prev.battleLog, battleLogEntry].slice(-20) 
-    }));
-    
     setGameState(prev => {
+      const updatedFactions = { ...prev.factions };
+      if (logData.outcome === 'ATTACKER_WINS') {
+        updatedFactions[logData.attacker].successfulAttacks = (updatedFactions[logData.attacker].successfulAttacks || 0) + 1;
+        if (logData.defender !== 'NEUTRAL') {
+            updatedFactions[logData.defender].defensesLost = (updatedFactions[logData.defender].defensesLost || 0) + 1;
+        }
+      } else if (logData.outcome === 'DEFENDER_WINS') {
+        updatedFactions[logData.attacker].attacksLost = (updatedFactions[logData.attacker].attacksLost || 0) + 1;
+        if (logData.defender !== 'NEUTRAL') {
+            updatedFactions[logData.defender].successfulDefenses = (updatedFactions[logData.defender].successfulDefenses || 0) + 1;
+        }
+      }
+
+      updatedFactions[logData.attacker].unitsLost = (updatedFactions[logData.attacker].unitsLost || 0) + logData.attackerLosses;
+      if (logData.defender !== 'NEUTRAL') {
+          updatedFactions[logData.defender].unitsLost = (updatedFactions[logData.defender].unitsLost || 0) + logData.defenderLosses;
+      }
+
       const finalNodeState = prev.mapNodes[logData.nodeId]; 
       const totalUnitsAtNode = (finalNodeState?.standardUnits || 0) + (finalNodeState?.evolvedUnits || 0);
       const battleReportData: BattleReportData = {
@@ -164,9 +199,13 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
           diceRolls: logData.diceRolls,
       };
       setLatestBattleReportForModal(battleReportData);
-      return prev; 
-    });
 
+      return {
+        ...prev,
+        battleLog: [...prev.battleLog, battleLogEntry].slice(-20),
+        factions: updatedFactions
+      };
+    });
   }, []); 
 
   const formatDuration: (ms: number) => string = (ms: number): string => {
@@ -174,7 +213,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     const tenths = Math.floor((ms % 1000) / 100);
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(tenths).padStart(1,'0')}`;
   };
   
     const isNodeConnectedToCN = useCallback((nodeId: string, ownerId: NoosphericPlayerId, currentMapNodes: Record<string, NoosphericNodeData>): boolean => {
@@ -188,7 +227,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             const currentNode = currentMapNodes[currentNodeId];
 
             if (!currentNode || currentNode.owner !== ownerId) continue;
-            if (currentNode.isCN) return true; // Found a path to a Command Node
+            if (currentNode.isCN) return true; 
 
             for (const neighborId of currentNode.connections) {
                 if (!visited.has(neighborId)) {
@@ -243,7 +282,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                 const totalUnitsAtNode = (gs.mapNodes[targetNode.id].standardUnits || 0) + (gs.mapNodes[targetNode.id].evolvedUnits || 0);
                  if (totalUnitsAtNode + 2 <= (gs.mapNodes[targetNode.id].maxUnits || Infinity)) {
                     gs.mapNodes[targetNode.id].standardUnits += 2;
-                    // gs.factions[targetPlayer].totalUnits += 2; // Recalculated at end of turn
                 }
             }
             return gs;
@@ -260,7 +298,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             if (playerNodesWithUnits.length > 0) {
                 const targetNode = playerNodesWithUnits[Math.floor(Math.random() * playerNodesWithUnits.length)];
                 gs.mapNodes[targetNode.id].standardUnits = Math.max(0, targetNode.standardUnits - 1);
-                // gs.factions[targetPlayer].totalUnits = Math.max(0, gs.factions[targetPlayer].totalUnits -1); // Recalculated at end of turn
             }
             return gs;
         }
@@ -294,18 +331,28 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   }, [addSystemLog]);
 
 
-  const handleMapTypeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleMapTypeChangeInternal = (event: React.ChangeEvent<HTMLSelectElement>) => {
     if (isGameStarted) return; 
     const newMapType = event.target.value as NoosphericMapType;
     setCurrentMapTypeInternal(newMapType);
-    setGameState(createInitialGameState(newMapType, false)); 
+    setGameState(createInitialGameState(newMapType, false, isFogOfWarActive)); 
     setSelectedNodeId(null);
-    addSystemLog(`Previewing ${newMapType} map. Click 'Start Game' to begin.`, "INFO");
+    addSystemLog(`Previewing ${newMapType} map. Click 'Start Game' to begin. Fog of War: ${isFogOfWarActive ? 'ON' : 'OFF'}`, "INFO");
+  };
+  
+  const handleFogOfWarToggle = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (isGameStarted) return;
+    const newFogState = event.target.checked;
+    setIsFogOfWarActive(newFogState);
+    setGameState(createInitialGameState(currentMapTypeInternal, false, newFogState));
+    addSystemLog(`Fog of War turned ${newFogState ? 'ON' : 'OFF'}. Map re-initialized for preview.`, "INFO");
   };
 
+
   const handleStartNewGameClick = useCallback(() => {
+    if (!isOverallAiReady) return;
     const gameJustStarted = true;
-    const newInitialState = createInitialGameState(currentMapTypeInternal, gameJustStarted);
+    const newInitialState = createInitialGameState(currentMapTypeInternal, gameJustStarted, isFogOfWarActive);
     setGameState(newInitialState); 
     setIsGameStarted(true);
     setSelectedNodeId(null);
@@ -316,12 +363,26 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     setAverageTurnTimeDisplay("--:--.-");
     turnStartTimeForAvgRef.current = Date.now(); 
     kjControlStreakRef.current = { 'GEM-Q': 0, 'AXIOM': 0 };
-  }, [currentMapTypeInternal, createInitialGameState]);
+  }, [currentMapTypeInternal, createInitialGameState, isOverallAiReady, addSystemLog, isFogOfWarActive]);
+
+  const handleNewGameButtonClickInHeader = () => { 
+    setIsGameStarted(false); 
+    setIsLoadingAI(null); 
+    setGameState(createInitialGameState(currentMapTypeInternal, false, isFogOfWarActive));
+    setSelectedNodeId(null);
+    setLatestBattleReportForModal(null);
+    setTotalGameTimeMs(0);
+    setCompletedTurnsForAvg(0);
+    setAverageTurnTimeDisplay("--:--.-");
+    turnStartTimeForAvgRef.current = null;
+    kjControlStreakRef.current = { 'GEM-Q': 0, 'AXIOM': 0 };
+    addSystemLog(`New game setup initiated. Select map and options. Fog of War: ${isFogOfWarActive ? 'ON' : 'OFF'}`, "INFO");
+  };
 
   const handlePauseToggle = () => {
     if (!isGameStarted) return;
     setGameState(prev => ({ ...prev, isPaused: !prev.isPaused }));
-    addSystemLog(gameState.isPaused ? "Simulation Resumed." : "Simulation Paused.", "INFO");
+    addSystemLog(gameStateRef.current.isPaused ? "Simulation Resumed." : "Simulation Paused.", "INFO");
   };
 
   const handleNodeClick = (nodeId: string) => {
@@ -336,7 +397,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     addSystemLog(`${player} tactical analysis: ${aiResponse.tacticalAnalysis}`, 'AI_ACTION', player);
     
     setGameState(prevGameState => {
-        let currentPrev = JSON.parse(JSON.stringify(prevGameState)) as NoosphericGameState; // Deep copy
+        let currentPrev = JSON.parse(JSON.stringify(prevGameState)) as NoosphericGameState; 
             
         aiResponse.actions.forEach(action => {
             const actionNodeLabel = action.nodeId ? (currentPrev.mapNodes[action.nodeId]?.label || action.nodeId) : '';
@@ -369,13 +430,13 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             
             if (action.type === 'DEPLOY_UNITS' && action.nodeId && action.units) {
                 const targetNode = currentPrev.mapNodes[action.nodeId!];
-                const unitCost = action.units; 
+                const unitCost = action.units * DEPLOY_STANDARD_UNIT_COST; 
                 if (targetNode && targetNode.owner === player && currentPrev.factions[player].qr >= unitCost) { 
                     const totalUnitsAtNode = (targetNode.standardUnits || 0) + (targetNode.evolvedUnits || 0);
                     if (totalUnitsAtNode + action.units <= (targetNode.maxUnits || Infinity)) {
                         currentPrev.mapNodes[action.nodeId!].standardUnits = (targetNode.standardUnits || 0) + action.units!;
                         currentPrev.factions[player].qr -= unitCost; 
-                        // currentPrev.factions[player].totalUnits += action.units!; // Recalculated at end of turn
+                        currentPrev.factions[player].unitsPurchased = (currentPrev.factions[player].unitsPurchased || 0) + action.units;
                     } else {
                          addSystemLog(`${player} failed to deploy to ${targetNode?.label}: Exceeds max units (${targetNode.maxUnits}).`, 'ERROR', player);
                     }
@@ -387,12 +448,14 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                 const sourceNode = currentPrev.mapNodes[action.fromNodeId!];
                 const destNode = currentPrev.mapNodes[action.toNodeId!];
                 const totalUnitsToMove = action.units!;
-                const totalUnitsAtSource = (sourceNode.standardUnits || 0) + (sourceNode.evolvedUnits || 0);
+                const attackerInitialStandard = sourceNode.standardUnits || 0; 
+                const attackerInitialEvolved = sourceNode.evolvedUnits || 0;
+                const totalUnitsAtSource = attackerInitialStandard + attackerInitialEvolved;
 
                 if (sourceNode && destNode && sourceNode.owner === player && sourceNode.connections.includes(action.toNodeId!) && totalUnitsAtSource >= totalUnitsToMove) {
                     if (destNode.owner === player || destNode.owner === 'NEUTRAL') { 
-                        let standardUnitsToMove = Math.min(totalUnitsToMove, sourceNode.standardUnits);
-                        let evolvedUnitsToMove = Math.min(totalUnitsToMove - standardUnitsToMove, sourceNode.evolvedUnits);
+                        let standardUnitsToMove = Math.min(totalUnitsToMove, attackerInitialStandard);
+                        let evolvedUnitsToMove = Math.min(totalUnitsToMove - standardUnitsToMove, attackerInitialEvolved);
                         
                         const currentTotalAtDest = (destNode.standardUnits || 0) + (destNode.evolvedUnits || 0);
                         const remainingCapacity = (destNode.maxUnits || Infinity) - currentTotalAtDest;
@@ -417,8 +480,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
 
                         if (destNode.owner === 'NEUTRAL') { 
                             currentPrev.mapNodes[action.toNodeId!].owner = player;
-                           // currentPrev.factions[player].nodesControlled +=1; // Recalculated at end of turn
-                           // if(destNode.isKJ) currentPrev.factions[player].kjsHeld +=1; // Recalculated at end of turn
                         }
                     } else {
                          addSystemLog(`${player} attempted invalid move to enemy node ${destNode.label} during MANEUVER. Use ATTACK in COMBAT.`, 'ERROR', player);
@@ -435,7 +496,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     totalUnitsAtNode >= FAB_HUB_GARRISON_MIN &&
                     isNodeConnectedToCN(action.nodeId, player, currentPrev.mapNodes)) {
                     currentPrev.mapNodes[action.nodeId].isHubActive = true;
-                    currentPrev.mapNodes[action.nodeId].hubDisconnectedTurn = undefined; // Clear any grace period
+                    currentPrev.mapNodes[action.nodeId].hubDisconnectedTurn = undefined; 
                     currentPrev.factions[player].qr -= FAB_HUB_ACTIVATION_COST;
                     addSystemLog(`${player} activated Fabrication Hub at ${targetNode.label}.`, 'AI_ACTION', player);
                 } else {
@@ -457,32 +518,40 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     addSystemLog(`${player} failed to evolve units at ${targetNode?.label}. Conditions not met (Active: ${targetNode?.isHubActive}, QR: ${currentPrev.factions[player].qr}, Std.Units: ${targetNode?.standardUnits}, Connected: ${targetNode ? isNodeConnectedToCN(action.nodeId, player, currentPrev.mapNodes) : 'N/A'}).`, 'ERROR', player);
                 }
             }
-            else if (action.type === 'ATTACK_NODE' && action.fromNodeId && action.toNodeId && action.units) {
-                 const attackerNode = currentPrev.mapNodes[action.fromNodeId!];
-                 const defenderNode = currentPrev.mapNodes[action.toNodeId!];
-                 const totalAttackingUnitsRequest = action.units!;
-                 
-                 const attackerInitialStandard = attackerNode.standardUnits || 0;
-                 const attackerInitialEvolved = attackerNode.evolvedUnits || 0;
-                 const attackerSourceTotal = attackerInitialStandard + attackerInitialEvolved;
+           else if (action.type === 'ATTACK_NODE' && action.fromNodeId && action.toNodeId && action.units) {
+                const attackerNode = currentPrev.mapNodes[action.fromNodeId!];
+                const defenderNode = currentPrev.mapNodes[action.toNodeId!];
+                const totalAttackingUnitsRequest = action.units!;
+                
+                const attackerSourceInitialStandard = attackerNode.standardUnits || 0;
+                const attackerSourceInitialEvolved = attackerNode.evolvedUnits || 0;
+                const attackerSourceTotal = attackerSourceInitialStandard + attackerSourceInitialEvolved;
 
-                 if (attackerNode && defenderNode && attackerNode.owner === player && attackerSourceTotal >= totalAttackingUnitsRequest && defenderNode.owner !== player && attackerNode.connections.includes(action.toNodeId!)) {
+                if (attackerNode && defenderNode && attackerNode.owner === player && attackerSourceTotal >= totalAttackingUnitsRequest && defenderNode.owner !== player && attackerNode.connections.includes(action.toNodeId!)) {
                     const defenderPlayerId = defenderNode.owner;
                     const defenderInitialStandardUnits = defenderNode.standardUnits || 0;
                     const defenderInitialEvolvedUnits = defenderNode.evolvedUnits || 0;
                     const defenderInitialTotalUnits = defenderInitialStandardUnits + defenderInitialEvolvedUnits;
                     
-                    let attackingStandardUnits = Math.min(totalAttackingUnitsRequest, attackerInitialStandard);
-                    let attackingEvolvedUnits = Math.min(totalAttackingUnitsRequest - attackingStandardUnits, attackerInitialEvolved);
-                    let currentAttackerTotalForCombat = attackingStandardUnits + attackingEvolvedUnits;
+                    // Deduct committed units from source node IMMEDIATELY
+                    let committedStandardFromSource = Math.min(totalAttackingUnitsRequest, attackerSourceInitialStandard);
+                    let committedEvolvedFromSource = Math.min(totalAttackingUnitsRequest - committedStandardFromSource, attackerSourceInitialEvolved);
+                    
+                    currentPrev.mapNodes[action.fromNodeId!].standardUnits = attackerSourceInitialStandard - committedStandardFromSource;
+                    currentPrev.mapNodes[action.fromNodeId!].evolvedUnits = attackerSourceInitialEvolved - committedEvolvedFromSource;
+                    
+                    // Attacking stack for combat calculation
+                    let attackingStandardUnitsInBattle = committedStandardFromSource;
+                    let attackingEvolvedUnitsInBattle = committedEvolvedFromSource;
+                    let currentAttackerTotalForCombat = attackingStandardUnitsInBattle + attackingEvolvedUnitsInBattle;
 
                     let currentDefenderStandardUnits = defenderInitialStandardUnits;
                     let currentDefenderEvolvedUnits = defenderInitialEvolvedUnits;
-                    let totalAttackerLosses = 0;
+                    let totalAttackerLossesInBattle = 0;
                     let totalDefenderLosses = 0;
                     const diceRollsDetails: DiceRollDetail[] = [];
 
-                    const attackerHasEvolved = attackingEvolvedUnits > 0;
+                    const attackerHasEvolved = attackingEvolvedUnitsInBattle > 0;
                     const defenderHasEvolved = defenderInitialEvolvedUnits > 0;
 
                     if (defenderInitialTotalUnits === 0 && defenderPlayerId === 'NEUTRAL') { 
@@ -503,7 +572,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                                 roundOutcome = `Attacker Hits (Defender loses 1 unit)`;
                             } else if (defenderRoll > attackerRoll) {
                                 tempAttackerTotalInBattle--;
-                                totalAttackerLosses++;
+                                totalAttackerLossesInBattle++;
                                 roundOutcome = `Defender Hits (Attacker loses 1 unit)`;
                             } else {
                                 roundOutcome = "Clash (No losses this roll)";
@@ -521,38 +590,35 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     
                     const battleOutcome: BattleLogEntry['outcome'] = currentAttackerTotalForCombat > 0 ? 'ATTACKER_WINS' : 'DEFENDER_WINS';
                     const nodeCaptured = battleOutcome === 'ATTACKER_WINS';
-
-                    let remainingAttackerLossesInBattle = totalAttackerLosses;
-                    const standardAttackerLossesCommitted = Math.min(remainingAttackerLossesInBattle, attackingStandardUnits);
-                    attackingStandardUnits -= standardAttackerLossesCommitted; 
-                    remainingAttackerLossesInBattle -= standardAttackerLossesCommitted;
-                    attackingEvolvedUnits = Math.max(0, attackingEvolvedUnits - remainingAttackerLossesInBattle); 
                     
-                    currentPrev.mapNodes[action.fromNodeId!].standardUnits = attackerInitialStandard - (Math.min(totalAttackingUnitsRequest, attackerInitialStandard) - attackingStandardUnits);
-                    currentPrev.mapNodes[action.fromNodeId!].evolvedUnits = attackerInitialEvolved - (Math.min(totalAttackingUnitsRequest - Math.min(totalAttackingUnitsRequest, attackerInitialStandard), attackerInitialEvolved) - attackingEvolvedUnits);
-
+                    let survivingStandardAttackers = Math.max(0, attackingStandardUnitsInBattle - Math.min(totalAttackerLossesInBattle, attackingStandardUnitsInBattle));
+                    let survivingEvolvedAttackers = Math.max(0, attackingEvolvedUnitsInBattle - Math.max(0, totalAttackerLossesInBattle - Math.min(totalAttackerLossesInBattle, attackingStandardUnitsInBattle)));
 
                     if (nodeCaptured) {
-                        const remainingStandardAttackers = attackingStandardUnits; 
-                        const remainingEvolvedAttackers = attackingEvolvedUnits;   
-                        
-                        const totalUnitsToPlace = remainingStandardAttackers + remainingEvolvedAttackers;
+                        const totalUnitsToPlace = survivingStandardAttackers + survivingEvolvedAttackers;
                         const destCapacity = defenderNode.maxUnits || Infinity;
-                        let actualStandardPlaced = remainingStandardAttackers;
-                        let actualEvolvedPlaced = remainingEvolvedAttackers;
+                        let actualStandardPlaced = survivingStandardAttackers;
+                        let actualEvolvedPlaced = survivingEvolvedAttackers;
 
                         if (totalUnitsToPlace > destCapacity) {
                             const overflow = totalUnitsToPlace - destCapacity;
+                            let standardReturned = 0;
+                            let evolvedReturned = 0;
+                            
+                            // Prioritize returning evolved units if possible, then standard
                             if (actualEvolvedPlaced >= overflow) { 
+                                evolvedReturned = overflow;
                                 actualEvolvedPlaced -= overflow;
-                            } else {
+                            } else { // Not enough evolved to cover overflow, return all evolved and some standard
+                                evolvedReturned = actualEvolvedPlaced;
                                 const remainingOverflow = overflow - actualEvolvedPlaced;
                                 actualEvolvedPlaced = 0;
+                                standardReturned = Math.min(actualStandardPlaced, remainingOverflow);
                                 actualStandardPlaced = Math.max(0, actualStandardPlaced - remainingOverflow);
                             }
-                             addSystemLog(`Overflow units (${overflow}) returned to ${attackerNode.label} after capturing ${defenderNode.label}.`, 'INFO', player);
-                             currentPrev.mapNodes[action.fromNodeId!].standardUnits += (remainingStandardAttackers - actualStandardPlaced);
-                             currentPrev.mapNodes[action.fromNodeId!].evolvedUnits += (remainingEvolvedAttackers - actualEvolvedPlaced);
+                             addSystemLog(`Overflow units (${standardReturned + evolvedReturned}) returned to ${attackerNode.label} after capturing ${defenderNode.label}.`, 'INFO', player);
+                             currentPrev.mapNodes[action.fromNodeId!].standardUnits += standardReturned;
+                             currentPrev.mapNodes[action.fromNodeId!].evolvedUnits += evolvedReturned;
                         }
 
                         currentPrev.mapNodes[action.toNodeId!] = { 
@@ -563,13 +629,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                             isHubActive: false, 
                             hubDisconnectedTurn: undefined
                         };
-
-                       // currentPrev.factions[player].nodesControlled +=1; // Recalculated end of turn
-                       // if(defenderNode.isKJ) currentPrev.factions[player].kjsHeld +=1; // Recalculated end of turn
-                       // if (defenderPlayerId !== 'NEUTRAL') {
-                       //    currentPrev.factions[defenderPlayerId].nodesControlled = Math.max(0, currentPrev.factions[defenderPlayerId].nodesControlled - 1); // Recalculated
-                       //    if(defenderNode.isKJ) currentPrev.factions[defenderPlayerId].kjsHeld = Math.max(0, currentPrev.factions[defenderPlayerId].kjsHeld -1); // Recalculated
-                       // }
                     } else { 
                         currentPrev.mapNodes[action.toNodeId!] = { ...defenderNode, standardUnits: currentDefenderStandardUnits, evolvedUnits: currentDefenderEvolvedUnits };
                     }
@@ -581,10 +640,10 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                         fromNodeId: action.fromNodeId,
                         nodeId: action.toNodeId!, 
                         outcome: battleOutcome, 
-                        attackerLosses: totalAttackerLosses, 
+                        attackerLosses: totalAttackerLossesInBattle, 
                         defenderLosses: totalDefenderLosses, 
                         nodeCaptured,
-                        attackerInitialUnits: totalAttackingUnitsRequest,
+                        attackerInitialUnits: totalAttackingUnitsRequest, // This is the committed stack size
                         defenderInitialUnits: defenderInitialTotalUnits,
                         diceRolls: diceRollsDetails,
                         nodeName: defenderNode.regionName, 
@@ -598,7 +657,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         currentPrev.factions[player].tacticalAnalysis = aiResponse.tacticalAnalysis;
         currentPrev.factions[player].aiError = undefined;
 
-        // Log tactical analysis to history
         const newAnalysisEntry: TacticalAnalysisEntry = {
           turn: currentPrev.turn,
           phase: currentPrev.currentPhase,
@@ -607,7 +665,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         currentPrev.factions[player].tacticalAnalysisHistory = [
           ...currentPrev.factions[player].tacticalAnalysisHistory,
           newAnalysisEntry
-        ].slice(-50); // Keep last 50 entries
+        ].slice(-50); 
 
 
         return currentPrev;
@@ -616,6 +674,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   }, [addSystemLog, addBattleLog, isNodeConnectedToCN]); 
 
   const advancePhase = useCallback(() => {
+    if (gameStateRef.current.isPaused) return;
     setGameState(prev => {
       if (gameIsOverRef.current || prev.isPaused) return prev;
       let nextPhase: NoosphericPhase = prev.currentPhase;
@@ -727,7 +786,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
 
                 updatedState.factions = newFactions;
 
-                // KJ Control Win Condition Logic
                 let requiredKJsForWin = 2;
                 let kjWinStreakTarget = 2;
 
@@ -738,15 +796,11 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     requiredKJsForWin = 2; 
                     kjWinStreakTarget = 3;
                 }
-                // Other maps default to 2 KJs for 2 turns.
 
                 (['GEM-Q', 'AXIOM'] as NoosphericPlayerId[]).forEach(player => {
                     const opponent = player === 'GEM-Q' ? 'AXIOM' : 'GEM-Q';
                     if (updatedState.factions[player].kjsHeld >= requiredKJsForWin) {
                         kjControlStreakRef.current[player]++;
-                        // If opponent also meets KJ condition, nobody's streak resets this turn specifically because of this
-                        // but the win can only occur if one side has it and the other doesn't (implicitly by one winning first).
-                        // However, if one side gains the KJs and the other loses them below threshold, then opponent streak resets.
                         if (updatedState.factions[opponent].kjsHeld < requiredKJsForWin) {
                            kjControlStreakRef.current[opponent] = 0; 
                         }
@@ -758,7 +812,8 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                         if (updatedState.winner === undefined) { 
                             updatedState.winner = player;
                             nextPhase = 'GAME_OVER';
-                            addSystemLog(`${player} wins by controlling ${updatedState.factions[player].kjsHeld} (target: ${requiredKJsForWin}+) connected KJs for ${kjWinStreakTarget} consecutive opponent turns!`, "EVENT", undefined, prev.turn, 'COMBAT');
+                            gameIsOverRef.current = true; 
+                            addSystemLog(`${player} wins by controlling ${updatedState.factions[player].kjsHeld} (target: ${requiredKJsForWin}+) connected KJs for ${kjWinStreakTarget} consecutive opponent turns!`, "EVENT", undefined, prev.turn, 'GAME_OVER');
                         }
                     }
                 });
@@ -773,17 +828,26 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     const axiomLoses = !axiomHasUnits && !axiomHasCNs;
 
                     if (gemQLoses && axiomLoses) {
-                        updatedState.winner = 'DRAW'; 
-                        nextPhase = 'GAME_OVER';
-                        addSystemLog(`Mutual Annihilation! Both factions eliminated. Game is a DRAW.`, "EVENT", undefined, prev.turn, 'COMBAT');
+                        if (updatedState.winner === undefined) {
+                            updatedState.winner = 'DRAW'; 
+                            nextPhase = 'GAME_OVER';
+                            gameIsOverRef.current = true; 
+                            addSystemLog(`Mutual Annihilation! Both factions eliminated. Game is a DRAW.`, "EVENT", undefined, prev.turn, 'GAME_OVER');
+                        }
                     } else if (gemQLoses) {
-                        updatedState.winner = 'AXIOM';
-                        nextPhase = 'GAME_OVER';
-                        addSystemLog(`GEM-Q has been eliminated (no CNs or units). AXIOM wins by annihilation!`, "EVENT", undefined, prev.turn, 'COMBAT');
+                         if (updatedState.winner === undefined) {
+                            updatedState.winner = 'AXIOM';
+                            nextPhase = 'GAME_OVER';
+                            gameIsOverRef.current = true; 
+                            addSystemLog(`GEM-Q has been eliminated (no CNs or units). AXIOM wins by annihilation!`, "EVENT", undefined, prev.turn, 'GAME_OVER');
+                        }
                     } else if (axiomLoses) {
-                        updatedState.winner = 'GEM-Q';
-                        nextPhase = 'GAME_OVER';
-                        addSystemLog(`AXIOM has been eliminated (no CNs or units). GEM-Q wins by annihilation!`, "EVENT", undefined, prev.turn, 'COMBAT');
+                        if (updatedState.winner === undefined) {
+                            updatedState.winner = 'GEM-Q';
+                            nextPhase = 'GAME_OVER';
+                            gameIsOverRef.current = true; 
+                            addSystemLog(`AXIOM has been eliminated (no CNs or units). GEM-Q wins by annihilation!`, "EVENT", undefined, prev.turn, 'GAME_OVER');
+                        }
                     }
                 }
 
@@ -809,8 +873,9 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     nextPhase = 'MANEUVER';
                     nextActivePlayer = 'GEM-Q';
 
-                    if (nextTurn > DEFAULT_MAX_TURNS) {
+                    if (nextTurn > DEFAULT_MAX_TURNS && updatedState.winner === undefined) { 
                         nextPhase = 'GAME_OVER';
+                        gameIsOverRef.current = true; 
                         let winnerScore: NoosphericPlayerId | 'DRAW' = 'DRAW';
                         const gemScore = updatedState.factions['GEM-Q'].qr + (updatedState.factions['GEM-Q'].nodesControlled * 10) + (updatedState.factions['GEM-Q'].kjsHeld * 50) + (updatedState.factions['GEM-Q'].totalUnits * 2);
                         const axiomScore = updatedState.factions['AXIOM'].qr + (updatedState.factions['AXIOM'].nodesControlled * 10) + (updatedState.factions['AXIOM'].kjsHeld * 50) + (updatedState.factions['AXIOM'].totalUnits * 2);
@@ -825,17 +890,24 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             break;
         case 'GAME_OVER': return prev; 
       }
+      if (updatedState.winner && updatedState.currentPhase !== 'GAME_OVER') {
+          nextPhase = 'GAME_OVER'; 
+          gameIsOverRef.current = true;
+      }
       return { ...updatedState, currentPhase: nextPhase, turn: nextTurn, activePlayer: nextActivePlayer };
     });
   }, [addSystemLog, handleFluctuationEvent, totalGameTimeMs, formatDuration, isNodeConnectedToCN]); 
 
 
   const makeAIMove = useCallback(async () => {
-    const currentPhaseSnapshot = gameState.currentPhase;
-    const activePlayerSnapshot = gameState.activePlayer;
-    const currentTurnSnapshot = gameState.turn; 
+    if (gameStateRef.current.isPaused) { setIsLoadingAI(null); return; } 
+    
+    const currentPhaseSnapshot = gameStateRef.current.currentPhase;
+    const activePlayerSnapshot = gameStateRef.current.activePlayer;
+    const currentTurnSnapshot = gameStateRef.current.turn; 
+    const isFogOfWarCurrentlyActive = gameStateRef.current.isFogOfWarActive;
 
-    if (apiKeyMissing || gameIsOverRef.current || !isOverallAiReady || gameState.isPaused || currentPhaseSnapshot === 'GAME_OVER') {
+    if (apiKeyMissing || gameIsOverRef.current || !isOverallAiReady || currentPhaseSnapshot === 'GAME_OVER') {
       return;
     }
 
@@ -849,27 +921,102 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     if (!currentAiChat) {
       addSystemLog(`${currentPlayerId} is not available (chat instance is null). Skipping action.`, "ERROR", currentPlayerId);
       setIsLoadingAI(null);
-      setTimeout(advancePhase, PHASE_ADVANCE_DELAY_MS); 
+      setTimeout(() => { if (!gameStateRef.current.isPaused) advancePhase(); }, PHASE_ADVANCE_DELAY_MS);
       return;
     }
     
+    let visibleMapNodes: Record<string, NoosphericNodeData> = { ...gameStateRef.current.mapNodes };
+    let visibleFactionsData: { 'GEM-Q': NoosphericFaction; 'AXIOM': NoosphericFaction; } = { ...gameStateRef.current.factions };
+
+    if (isFogOfWarCurrentlyActive) {
+        const playerOwnedNodeIds = new Set<string>();
+        const adjacentToPlayerNodeIds = new Set<string>();
+
+        for (const nodeId in gameStateRef.current.mapNodes) {
+            if (gameStateRef.current.mapNodes[nodeId].owner === currentPlayerId) {
+                playerOwnedNodeIds.add(nodeId);
+            }
+        }
+
+        playerOwnedNodeIds.forEach(ownedNodeId => {
+            const ownedNodeData = gameStateRef.current.mapNodes[ownedNodeId];
+            if (ownedNodeData && ownedNodeData.connections) {
+                ownedNodeData.connections.forEach(connId => {
+                    const connectedNode = gameStateRef.current.mapNodes[connId];
+                    if (connectedNode && connectedNode.owner !== currentPlayerId) { 
+                        adjacentToPlayerNodeIds.add(connId);
+                    }
+                });
+            }
+        });
+
+        const tempVisibleMapNodes: Record<string, NoosphericNodeData> = {};
+        playerOwnedNodeIds.forEach(nodeId => { 
+            if (gameStateRef.current.mapNodes[nodeId]) {
+                tempVisibleMapNodes[nodeId] = { ...gameStateRef.current.mapNodes[nodeId] };
+            }
+        });
+
+        adjacentToPlayerNodeIds.forEach(nodeId => { 
+            const originalNode = gameStateRef.current.mapNodes[nodeId];
+            if (originalNode) { 
+                tempVisibleMapNodes[nodeId] = {
+                    id: originalNode.id,
+                    label: originalNode.label,
+                    regionName: originalNode.regionName,
+                    owner: 'UNKNOWN' as NoosphericPlayerId, 
+                    standardUnits: 0, 
+                    evolvedUnits: 0,  
+                    qrOutput: 0,     
+                    isKJ: originalNode.isKJ, 
+                    isCN: originalNode.isCN, 
+                    x: originalNode.x,
+                    y: originalNode.y,
+                    connections: originalNode.connections, 
+                    maxUnits: originalNode.maxUnits,
+                    hasFabricationHub: false, 
+                    isHubActive: false,       
+                    hubDisconnectedTurn: undefined, 
+                };
+            }
+        });
+        visibleMapNodes = tempVisibleMapNodes; 
+
+
+        const opponentId = currentPlayerId === 'GEM-Q' ? 'AXIOM' : 'GEM-Q';
+        visibleFactionsData = JSON.parse(JSON.stringify(gameStateRef.current.factions)); 
+
+        visibleFactionsData[opponentId] = {
+          ...visibleFactionsData[opponentId],
+          qr: 0,
+          nodesControlled: 0,
+          totalUnits: 0,
+          totalStandardUnits: 0,
+          totalEvolvedUnits: 0,
+          activeHubsCount: 0,
+          kjsHeld: 0,
+          unitsPurchased: 0, 
+          unitsLost: visibleFactionsData[opponentId].unitsLost, 
+        };
+    }
+
+
     const basePromptGameState = {
         turn: currentTurnSnapshot, 
         currentPhase: currentPhaseSnapshot, 
         yourFactionId: currentPlayerId,    
-        mapNodes: gameState.mapNodes, 
-        mapType: gameState.mapType,
-        factions: { 
-            'GEM-Q': { qr: gameState.factions['GEM-Q'].qr, nodesControlled: gameState.factions['GEM-Q'].nodesControlled, totalUnits: gameState.factions['GEM-Q'].totalUnits, totalStandardUnits: gameState.factions['GEM-Q'].totalStandardUnits, totalEvolvedUnits: gameState.factions['GEM-Q'].totalEvolvedUnits, activeHubsCount: gameState.factions['GEM-Q'].activeHubsCount, kjsHeld: gameState.factions['GEM-Q'].kjsHeld },
-            'AXIOM': { qr: gameState.factions['AXIOM'].qr, nodesControlled: gameState.factions['AXIOM'].nodesControlled, totalUnits: gameState.factions['AXIOM'].totalUnits, totalStandardUnits: gameState.factions['AXIOM'].totalStandardUnits, totalEvolvedUnits: gameState.factions['AXIOM'].totalEvolvedUnits, activeHubsCount: gameState.factions['AXIOM'].activeHubsCount, kjsHeld: gameState.factions['AXIOM'].kjsHeld }
-        }
+        mapNodes: visibleMapNodes, 
+        mapType: gameStateRef.current.mapType,
+        isFogOfWarActive: isFogOfWarCurrentlyActive, 
+        factions: visibleFactionsData 
     };
-    const basePromptString = `Current Game State:\n${JSON.stringify(basePromptGameState, null, 2)}\n\nYour turn (${currentPlayerId}) for phase ${currentPhaseSnapshot} on map "${gameState.mapType}". Provide your response in the specified JSON format. Prioritize capturing KJs and CNs. Ensure actions are valid and units count > 0. For COMBAT phase, focus on 'ATTACK_NODE' actions. For MANEUVER, focus on 'DEPLOY_UNITS', 'MOVE_UNITS', 'ACTIVATE_FABRICATION_HUB', 'EVOLVE_UNITS'. Remember unit deployment, hub activation, and unit evolution cost QR. Adhere to your strategic directives regarding win conditions and connectivity rules.`;
+    const basePromptString = `Current Game State:\n${JSON.stringify(basePromptGameState, null, 2)}\n\nYour turn (${currentPlayerId}) for phase ${currentPhaseSnapshot} on map "${gameStateRef.current.mapType}". Provide your response in the specified JSON format. Prioritize capturing KJs and CNs. Ensure actions are valid and units count > 0. For COMBAT phase, focus on 'ATTACK_NODE' actions. For MANEUVER, focus on 'DEPLOY_UNITS', 'MOVE_UNITS', 'ACTIVATE_FABRICATION_HUB', 'EVOLVE_UNITS'. Remember unit deployment, hub activation, and unit evolution cost QR. Adhere to your strategic directives regarding win conditions and connectivity rules.`;
 
     let aiResponseProcessedSuccessfully = false;
     let lastValidationError: string | null = null;
 
     for (let attempt = 0; attempt <= MAX_NOOSPHERIC_RETRY_ATTEMPTS; attempt++) {
+        if (gameStateRef.current.isPaused) { setIsLoadingAI(null); break; }
         setIsLoadingAI(currentPlayerId);
         setGameState(prev => ({
             ...prev,
@@ -883,7 +1030,9 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         }
         
         try {
+            if (gameStateRef.current.isPaused) { setIsLoadingAI(null); break; }
             const response: GenerateContentResponse = await currentAiChat.sendMessage({ message: promptForAI });
+            if (gameStateRef.current.isPaused) { setIsLoadingAI(null); break; }
             let aiResponseText = response.text.trim();
             const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
             const match = aiResponseText.match(fenceRegex);
@@ -913,34 +1062,46 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                         lastValidationError = `Action ${action.type} is invalid in COMBAT phase.`; currentAttemptIsValid = false; break;
                     }
                     if (action.type === 'DEPLOY_UNITS') {
-                        const targetNode = gameState.mapNodes[action.nodeId!];
+                        const targetNode = gameStateRef.current.mapNodes[action.nodeId!];
+                        if (!targetNode) {lastValidationError = `DEPLOY_UNITS to non-existent node ID: ${action.nodeId}.`; currentAttemptIsValid = false; break;}
                         const totalUnitsAtNode = (targetNode.standardUnits || 0) + (targetNode.evolvedUnits || 0);
                         if (!targetNode.isCN || targetNode.owner !== currentPlayerId) { lastValidationError = `DEPLOY_UNITS to non-owned CN.`; currentAttemptIsValid = false; break;}
-                        if (gameState.factions[currentPlayerId].qr < (action.units || 0)) { lastValidationError = `DEPLOY_UNITS: Insufficient QR.`; currentAttemptIsValid = false; break;}
+                        if (gameStateRef.current.factions[currentPlayerId].qr < ((action.units || 0) * DEPLOY_STANDARD_UNIT_COST) ) { lastValidationError = `DEPLOY_UNITS: Insufficient QR.`; currentAttemptIsValid = false; break;}
                         if (totalUnitsAtNode + (action.units || 0) > (targetNode.maxUnits || Infinity)) { lastValidationError = `DEPLOY_UNITS to ${targetNode.label}: Would exceed max units (${targetNode.maxUnits}). Current: ${totalUnitsAtNode}, Deploying: ${action.units || 0}`; currentAttemptIsValid = false; break; }
                     } else if (action.type === 'MOVE_UNITS') {
-                        const sourceNode = gameState.mapNodes[action.fromNodeId!]; const destNode = gameState.mapNodes[action.toNodeId!];
+                        const sourceNode = gameStateRef.current.mapNodes[action.fromNodeId!]; 
+                        const destNode = gameStateRef.current.mapNodes[action.toNodeId!];
+                        if (!sourceNode) {lastValidationError = `MOVE_UNITS from non-existent node ID: ${action.fromNodeId}.`; currentAttemptIsValid = false; break;}
+                        if (!destNode) {lastValidationError = `MOVE_UNITS to non-existent node ID: ${action.toNodeId}.`; currentAttemptIsValid = false; break;}
                         const totalSourceUnits = (sourceNode.standardUnits || 0) + (sourceNode.evolvedUnits || 0);
                         const totalDestUnits = (destNode.standardUnits || 0) + (destNode.evolvedUnits || 0);
                         if (sourceNode.owner !== currentPlayerId) {lastValidationError = `MOVE_UNITS from unowned node.`; currentAttemptIsValid = false; break;}
                         if (totalSourceUnits < (action.units || 0)) {lastValidationError = `MOVE_UNITS: Insufficient units at source.`; currentAttemptIsValid = false; break;}
-                        if (!sourceNode.connections.includes(action.toNodeId!)) {lastValidationError = `MOVE_UNITS: Nodes not connected.`; currentAttemptIsValid = false; break;}
+                        if (!sourceNode.connections.includes(action.toNodeId!)) {lastValidationError = `MOVE_UNITS: Nodes ${action.fromNodeId} and ${action.toNodeId} not directly connected.`; currentAttemptIsValid = false; break;}
                         if (destNode.owner !== currentPlayerId && destNode.owner !== 'NEUTRAL') {lastValidationError = `MOVE_UNITS to enemy node in MANEUVER.`; currentAttemptIsValid = false; break;}
                         if (totalDestUnits + (action.units || 0) > (destNode.maxUnits || Infinity)) { lastValidationError = `MOVE_UNITS to ${destNode.label}: Destination would exceed max units (${destNode.maxUnits}). Current: ${totalDestUnits}, Moving: ${action.units || 0}`; currentAttemptIsValid = false; break; }
                     } else if (action.type === 'ACTIVATE_FABRICATION_HUB') {
-                        const targetNode = gameState.mapNodes[action.nodeId!];
+                        const targetNode = gameStateRef.current.mapNodes[action.nodeId!];
+                        if (!targetNode) {lastValidationError = `ACT_HUB on non-existent node ID: ${action.nodeId}.`; currentAttemptIsValid = false; break;}
                         const totalUnitsAtNode = (targetNode.standardUnits || 0) + (targetNode.evolvedUnits || 0);
                         if(!targetNode.hasFabricationHub) {lastValidationError = `ACT_HUB: Node has no hub.`; currentAttemptIsValid = false; break;}
                         if(targetNode.isHubActive) {lastValidationError = `ACT_HUB: Hub already active.`; currentAttemptIsValid = false; break;}
-                        if(gameState.factions[currentPlayerId].qr < FAB_HUB_ACTIVATION_COST) {lastValidationError = `ACT_HUB: Insufficient QR.`; currentAttemptIsValid = false; break;}
+                        if(gameStateRef.current.factions[currentPlayerId].qr < FAB_HUB_ACTIVATION_COST) {lastValidationError = `ACT_HUB: Insufficient QR.`; currentAttemptIsValid = false; break;}
                         if(totalUnitsAtNode < FAB_HUB_GARRISON_MIN) {lastValidationError = `ACT_HUB: Insufficient garrison.`; currentAttemptIsValid = false; break;}
-                        if(!isNodeConnectedToCN(action.nodeId!, currentPlayerId, gameState.mapNodes)) {lastValidationError = `ACT_HUB: Node not connected to CN.`; currentAttemptIsValid = false; break;}
+                        if(!isNodeConnectedToCN(action.nodeId!, currentPlayerId, gameStateRef.current.mapNodes)) {lastValidationError = `ACT_HUB: Node not connected to CN.`; currentAttemptIsValid = false; break;}
                     } else if (action.type === 'EVOLVE_UNITS') {
-                        const targetNode = gameState.mapNodes[action.nodeId!];
+                        const targetNode = gameStateRef.current.mapNodes[action.nodeId!];
+                        if (!targetNode) {lastValidationError = `EVOLVE on non-existent node ID: ${action.nodeId}.`; currentAttemptIsValid = false; break;}
                         if(!targetNode.isHubActive) {lastValidationError = `EVOLVE: Hub not active.`; currentAttemptIsValid = false; break;}
-                        if(gameState.factions[currentPlayerId].qr < ((action.unitsToEvolve || 0) * EVOLVE_UNIT_COST) ) {lastValidationError = `EVOLVE: Insufficient QR.`; currentAttemptIsValid = false; break;}
+                        if(gameStateRef.current.factions[currentPlayerId].qr < ((action.unitsToEvolve || 0) * EVOLVE_UNIT_COST) ) {lastValidationError = `EVOLVE: Insufficient QR.`; currentAttemptIsValid = false; break;}
                         if(targetNode.standardUnits < (action.unitsToEvolve || 0)) {lastValidationError = `EVOLVE: Insufficient standard units.`; currentAttemptIsValid = false; break;}
-                        if(!isNodeConnectedToCN(action.nodeId!, currentPlayerId, gameState.mapNodes)) {lastValidationError = `EVOLVE: Node not connected to CN.`; currentAttemptIsValid = false; break;}
+                        if(!isNodeConnectedToCN(action.nodeId!, currentPlayerId, gameStateRef.current.mapNodes)) {lastValidationError = `EVOLVE: Node not connected to CN.`; currentAttemptIsValid = false; break;}
+                    } else if (action.type === 'ATTACK_NODE') {
+                        if (!action.fromNodeId || !action.toNodeId) {lastValidationError = `ATTACK_NODE: Missing fromNodeId or toNodeId.`; currentAttemptIsValid = false; break;}
+                        const attackerNode = gameStateRef.current.mapNodes[action.fromNodeId];
+                        const defenderNode = gameStateRef.current.mapNodes[action.toNodeId];
+                        if (!attackerNode) {lastValidationError = `ATTACK_NODE from non-existent node ID: ${action.fromNodeId}.`; currentAttemptIsValid = false; break;}
+                        if (!defenderNode) {lastValidationError = `ATTACK_NODE to non-existent node ID: ${action.toNodeId}.`; currentAttemptIsValid = false; break;}
                     }
                 }
             }
@@ -948,7 +1109,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             if (currentAttemptIsValid && parsedResponse) {
                 processAIResponse(parsedResponse, currentPlayerId);
                 aiResponseProcessedSuccessfully = true;
-                 setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], successfulPhases: prev.factions[currentPlayerId].successfulPhases + 1 }}}));
+                setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], successfulTurnAttempts: (prev.factions[currentPlayerId].successfulTurnAttempts || 0) + 1 }}}));
                 if (attempt > 0) {
                     addSystemLog(`${currentPlayerId} provided valid actions on attempt ${attempt + 1}.`, 'INFO', currentPlayerId);
                 }
@@ -959,10 +1120,11 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                 setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], aiError: `Validation Error (Attempt ${attempt+1}): ${validationErrorMsg}.` }}}));
                 if (attempt === MAX_NOOSPHERIC_RETRY_ATTEMPTS) {
                     addSystemLog(`${currentPlayerId} failed all ${MAX_NOOSPHERIC_RETRY_ATTEMPTS + 1} attempts. Last error: ${validationErrorMsg}`, 'ERROR', currentPlayerId);
-                    setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedPhases: prev.factions[currentPlayerId].failedPhases + 1 }}}));
+                     setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedTurnAttempts: (prev.factions[currentPlayerId].failedTurnAttempts || 0) + 1 }}}));
                 }
             }
         } catch (apiOrParseError) {
+            if (gameStateRef.current.isPaused) { setIsLoadingAI(null); break; }
             lastValidationError = apiOrParseError instanceof Error ? apiOrParseError.message : String(apiOrParseError);
             const rawResp = (apiOrParseError as any).responseText || "N/A"; 
             console.error(`Error processing AI response for ${currentPlayerId} (Attempt ${attempt + 1}):`, lastValidationError, "Raw (if available):", rawResp);
@@ -970,42 +1132,60 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], aiError: `API/Parse Error (Attempt ${attempt+1}): ${lastValidationError}.` }}}));
             if (attempt === MAX_NOOSPHERIC_RETRY_ATTEMPTS) {
                  addSystemLog(`${currentPlayerId} failed all ${MAX_NOOSPHERIC_RETRY_ATTEMPTS + 1} attempts after API/Parse error. Last: ${lastValidationError}`, 'ERROR', currentPlayerId);
-                 setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedPhases: prev.factions[currentPlayerId].failedPhases + 1 }}}));
+                 setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedTurnAttempts: (prev.factions[currentPlayerId].failedTurnAttempts || 0) + 1 }}}));
             }
         }
     } 
 
-    if (!aiResponseProcessedSuccessfully) {
+    if (!aiResponseProcessedSuccessfully && !gameStateRef.current.isPaused) {
         addSystemLog(`${currentPlayerId} failed to provide valid actions after all attempts. Turn actions skipped.`, 'ERROR', currentPlayerId);
-        setGameState(prev => ({ ...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedPhases: prev.factions[currentPlayerId].failedPhases + 1 }}}));
+        setGameState(prev => {
+            if (prev.factions[currentPlayerId].aiError) { 
+                return prev;
+            }
+            return {...prev, factions: { ...prev.factions, [currentPlayerId]: { ...prev.factions[currentPlayerId], failedTurnAttempts: (prev.factions[currentPlayerId].failedTurnAttempts || 0) + 1 }}};
+        });
     }
 
     setIsLoadingAI(null);
-    setTimeout(advancePhase, AI_DECISION_DELAY_MS);
-  }, [apiKeyMissing, gameIsOverRef, isOverallAiReady, gameState, ai1Chat, ai2Chat, addSystemLog, processAIResponse, advancePhase, isNodeConnectedToCN]);
+    if (!gameStateRef.current.isPaused) {
+        setTimeout(advancePhase, AI_DECISION_DELAY_MS);
+    }
+  }, [apiKeyMissing, gameIsOverRef, isOverallAiReady, ai1Chat, ai2Chat, addSystemLog, processAIResponse, advancePhase, isNodeConnectedToCN]);
   
   useEffect(() => {
      if (isGameStarted && isOverallAiReady && !gameState.isPaused && !isLoadingAI && !gameIsOverRef.current && gameState.currentPhase !== 'GAME_OVER') {
         if (gameState.currentPhase === 'MANEUVER' || gameState.currentPhase === 'COMBAT') {
-            const timeoutId = setTimeout(() => makeAIMove(), AI_DECISION_DELAY_MS); 
+            const timeoutId = setTimeout(() => { 
+                if(!gameStateRef.current.isPaused && isMountedRef.current) makeAIMove() 
+            }, AI_DECISION_DELAY_MS); 
             return () => clearTimeout(timeoutId);
         } 
-        else if ((gameState.currentPhase === 'FLUCTUATION' || gameState.currentPhase === 'RESOURCE') && gameState.turn === 1 && 
-                 (gameState.systemLog.length === 1 && gameState.systemLog[0].message.includes("game started on"))) {
-            const timeoutId = setTimeout(() => advancePhase(), PHASE_ADVANCE_DELAY_MS);
-            return () => clearTimeout(timeoutId);
+        else if ((gameState.currentPhase === 'FLUCTUATION' || gameState.currentPhase === 'RESOURCE') && gameState.turn === 1 && isGameStarted) {
+            if (gameState.systemLog.some(log => log.message.includes("game started on") && log.phase === 'FLUCTUATION')) {
+                const timeoutId = setTimeout(() => { 
+                    if(!gameStateRef.current.isPaused && isMountedRef.current) advancePhase() 
+                }, PHASE_ADVANCE_DELAY_MS);
+                return () => clearTimeout(timeoutId);
+            }
         }
     }
   }, [isGameStarted, gameState.currentPhase, gameState.activePlayer, gameState.turn, gameState.isPaused, isLoadingAI, isOverallAiReady, makeAIMove, advancePhase, gameState.systemLog]);
 
 
   useEffect(() => {
-    if (isGameStartedFromBackup && initialGameState) {
-      setGameState(initialGameState);
-      setCurrentMapTypeInternal(initialGameState.mapType);
+    const currentInternalMapType = currentMapTypeInternal; 
+    const currentIsFogOfWar = isFogOfWarActive;        
+
+    if (propIsGameStartedFromBackup && propInitialGameState) {
+      setGameState(propInitialGameState);
+      setCurrentMapTypeInternal(propInitialGameState.mapType);
       setIsGameStarted(true); 
-      if (initialGameState.turn > 1) { 
-        setCompletedTurnsForAvg(initialGameState.turn -1); 
+      setIsFogOfWarActive(determineInitialFogState(propInitialGameState)); 
+      setIsLoadingAI(null); 
+
+      if (propInitialGameState.turn > 1) { 
+        setCompletedTurnsForAvg(propInitialGameState.turn -1); 
         setAverageTurnTimeDisplay("Resumed"); 
       } else {
         setTotalGameTimeMs(0);
@@ -1014,15 +1194,36 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
       }
       turnStartTimeForAvgRef.current = Date.now();
       kjControlStreakRef.current = { 'GEM-Q': 0, 'AXIOM': 0 }; 
-    } else if (!isGameStartedFromBackup && !isGameStarted) {
-      setGameState(createInitialGameState(initialMapType, false));
-      setTotalGameTimeMs(0);
-      setCompletedTurnsForAvg(0);
-      setAverageTurnTimeDisplay("--:--.-");
-      turnStartTimeForAvgRef.current = null;
-      kjControlStreakRef.current = { 'GEM-Q': 0, 'AXIOM': 0 };
+    } else {
+      if (!isGameStarted) { 
+          setIsLoadingAI(null); 
+          if (!gameState || gameState.mapType !== currentInternalMapType || gameState.isFogOfWarActive !== currentIsFogOfWar) {
+            setGameState(createInitialGameState(currentInternalMapType, false, currentIsFogOfWar));
+          }
+      }
+      if (!isGameStarted && !propInitialGameState) {
+        setTotalGameTimeMs(0);
+        setCompletedTurnsForAvg(0);
+        setAverageTurnTimeDisplay("--:--.-");
+        turnStartTimeForAvgRef.current = null;
+        kjControlStreakRef.current = { 'GEM-Q': 0, 'AXIOM': 0 };
+      }
     }
-  }, [isGameStartedFromBackup, initialGameState, initialMapType, createInitialGameState, isGameStarted]);
+  }, [
+      propIsGameStartedFromBackup, 
+      propInitialGameState, 
+      isGameStarted, 
+      currentMapTypeInternal, 
+      isFogOfWarActive,       
+      createInitialGameState, 
+      determineInitialFogState
+    ]);
+
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
 
   useEffect(() => {
@@ -1065,175 +1266,231 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         }
     }
     return cleanupInterval;
-  }, [isLoadingAI, gameState.currentPhase, gameState.isPaused, isGameStarted, gameState.turn, formatDuration]); 
+  }, [isLoadingAI, gameState.currentPhase, gameState.isPaused, isGameStarted, gameState.turn]); 
 
+  const handleExportGameState = () => {
+    if (!gameState) return;
+    const stateString = JSON.stringify(gameState, null, 2);
+    const blob = new Blob([stateString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    a.download = `noospheric_conquest_state_${timestamp}.json`;
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    addSystemLog("Game state exported successfully.", "EVENT");
+  };
 
-  if (!isOverallAiReady && !isGameStartedFromBackup) { 
+  const renderHeader = () => (
+    <header className="flex flex-col sm:flex-row justify-between items-center mb-2 p-2 bg-[var(--color-bg-panel)] rounded-md shadow-md flex-shrink-0">
+      <h1 className="text-lg md:text-xl font-bold text-[var(--color-text-heading)]">
+          Noospheric Conquest <span className="text-sm text-[var(--color-text-muted)]">- {isGameStarted ? gameState.mapType : currentMapTypeInternal}</span>
+      </h1>
+      <div className="flex items-center space-x-1 sm:space-x-2 mt-2 sm:mt-0">
+          {!isGameStarted ? (
+              <>
+                  <div className="control-group flex items-center">
+                      <label htmlFor="mapTypeSelect" className="text-xs text-[var(--color-text-muted)] mr-1.5">Map:</label>
+                      <select
+                          id="mapTypeSelect"
+                          value={currentMapTypeInternal}
+                          onChange={handleMapTypeChangeInternal}
+                          className="bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-1 rounded-sm text-[10px] focus-ring-accent"
+                          disabled={isGameStarted || isLoadingAI !== null}
+                      >
+                          {ALL_MAP_TYPES.map(mapType => (
+                              <option key={mapType} value={mapType}>{mapType}</option>
+                          ))}
+                      </select>
+                  </div>
+                  <div className="control-group flex items-center ml-2">
+                      <input
+                          type="checkbox"
+                          id="fogOfWarToggle"
+                          checked={isFogOfWarActive}
+                          onChange={handleFogOfWarToggle}
+                          className="form-checkbox h-3.5 w-3.5 text-[var(--color-primary-500)] bg-[var(--color-bg-input)] border-[var(--color-border-input)] rounded focus:ring-[var(--color-primary-500)] focus:ring-offset-0"
+                          disabled={isGameStarted || isLoadingAI !== null}
+                      />
+                      <label htmlFor="fogOfWarToggle" className="ml-1.5 text-xs text-[var(--color-text-muted)]">Fog of War</label>
+                  </div>
+                  <button
+                      onClick={handleStartNewGameClick}
+                      disabled={!isOverallAiReady || isLoadingAI !== null}
+                      className="px-2.5 py-1 bg-[var(--color-bg-button-primary)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-bg-button-primary-hover)] focus-ring-primary text-xs font-semibold uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                      Start Game
+                  </button>
+              </>
+          ) : (
+              <button
+                  onClick={handleNewGameButtonClickInHeader}
+                  disabled={isLoadingAI !== null}
+                  className="px-2.5 py-1 bg-[var(--color-bg-button-primary)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-bg-button-primary-hover)] focus-ring-primary text-xs font-semibold uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                  New Game Setup
+              </button>
+          )}
+           <button
+              onClick={handlePauseToggle}
+              disabled={!isGameStarted || gameIsOverRef.current}
+              className="px-2.5 py-1 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs font-semibold uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
+           >
+            {gameState.isPaused ? 'Resume Sim' : 'Pause Sim'}
+           </button>
+            <button
+                onClick={handleExportGameState}
+                disabled={!isGameStarted}
+                className="p-1.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                title="Export Current Game State"
+                aria-label="Export Game State"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3 md:w-4 md:h-4 mr-0 md:mr-1">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                {/* Export State */}
+            </button>
+           <div className="control-group flex items-center">
+                <label htmlFor="noosphericAppModeSelectHeader" className="sr-only">Mode:</label>
+                <select
+                    id="noosphericAppModeSelectHeader"
+                    value={currentAppMode}
+                    onChange={(e) => onModeChange(e.target.value as AppMode)}
+                    className="bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-1 rounded-sm text-[10px] focus-ring-accent"
+                    title="Change simulation mode"
+                >
+                    {Object.values(AppMode).map(mode => ( <option key={mode} value={mode}>{mode}</option>))}
+                </select>
+            </div>
+             <button
+                onClick={onOpenInfoModal}
+                title="About Noospheric Conquest Mode"
+                className="p-1 rounded-full hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
+                aria-label="Show information about Noospheric Conquest mode"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-[var(--color-accent-300)]">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+              </svg>
+            </button>
+      </div>
+    </header>
+  );
+
+  if (appInitializationError) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-lg text-[var(--color-error)] p-4 text-center w-full">
-        <p>Initializing AI for Noospheric Conquest... Please wait.</p>
-        {appInitializationError && !apiKeyMissing && (
-          <div className="mt-4 text-sm text-[var(--color-error)] bg-[var(--color-bg-panel)] p-3 rounded border border-[var(--color-error)] max-w-md">
-            <p className="font-semibold">An error occurred during App AI initialization:</p>
-            <pre className="whitespace-pre-wrap mt-2">{appInitializationError}</pre>
-          </div>
-        )}
-         {apiKeyMissing && (
-           <div className="mt-4 text-sm text-[var(--color-error)] bg-[var(--color-bg-panel)] p-3 rounded border border-[var(--color-error)] max-w-md">
-            <p className="font-semibold">API Key Missing!</p>
-            <p>The API_KEY is not configured. Noospheric AIs cannot be initialized.</p>
-          </div>
-        )}
+      <div className="flex flex-col items-center justify-center h-full p-4 bg-[var(--color-bg-page)] text-[var(--color-text-base)]">
+        {renderHeader()}
+        <h2 className="text-xl font-bold text-[var(--color-text-heading)] mb-4 mt-8">Noospheric Conquest - INIT ERROR</h2>
+        <p className="text-[var(--color-error)] mb-2 text-center">
+          {appInitializationError}
+        </p>
+        <p className="text-[var(--color-text-muted)] text-center">Ensure API key is valid and network is stable. Try switching modes and returning.</p>
       </div>
     );
   }
 
-  const gemQTacticalAnalysisCurrent = gameState.factions['GEM-Q'].aiError 
-    ? gameState.factions['GEM-Q'].aiError
-    : isLoadingAI === 'GEM-Q' && !gameState.factions['GEM-Q'].aiError 
-        ? "Analyzing..." 
-        : gameState.factions['GEM-Q'].tacticalAnalysis || "Awaiting orders...";
-
-  const axiomTacticalAnalysisCurrent = gameState.factions['AXIOM'].aiError
-    ? gameState.factions['AXIOM'].aiError
-    : isLoadingAI === 'AXIOM' && !gameState.factions['AXIOM'].aiError 
-        ? "Analyzing..."
-        : gameState.factions['AXIOM'].tacticalAnalysis || "Awaiting orders...";
-
-
-  const renderTacticalAnalysisBox = (
-    factionId: 'GEM-Q' | 'AXIOM',
-    title: string,
-    currentAnalysis: string,
-    history: TacticalAnalysisEntry[],
-    showHistoryState: boolean,
-    setShowHistoryState: React.Dispatch<React.SetStateAction<boolean>>
-  ) => {
-    const borderColorClass = factionId === 'GEM-Q' ? 'border-[var(--color-ai1-text)]' : 'border-[var(--color-ai2-text)]';
-    const textColorClass = factionId === 'GEM-Q' ? 'text-[var(--color-ai1-text)]' : 'text-[var(--color-ai2-text)]';
-    const isLoadingThisAI = isLoadingAI === factionId;
-    const aiError = gameState.factions[factionId].aiError;
-
-    return (
-      <div className={`bg-[var(--color-bg-panel)] p-2.5 border-2 ${borderColorClass} rounded shadow-md overflow-hidden flex flex-col h-full`}>
-        <div className="flex justify-between items-center mb-0.5 flex-shrink-0">
-            <h4 className={`text-sm font-semibold ${textColorClass} border-b border-opacity-50 pb-1`}>{title}</h4>
-            {history && history.length > 0 && (
-                <button 
-                    onClick={() => setShowHistoryState(!showHistoryState)}
-                    className="text-xs px-1.5 py-0.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
-                >
-                    {showHistoryState ? 'Current' : 'History'}
-                </button>
-            )}
-        </div>
-        <div className="text-xs text-[var(--color-text-muted)] overflow-y-auto flex-grow custom-scrollbar pr-1">
-            {showHistoryState ? (
-                history.slice().reverse().map((entry, index) => (
-                    <p key={index} className="mb-1 border-b border-dashed border-[var(--color-border-base)] border-opacity-30 pb-0.5">
-                        <span className="opacity-70">[T{entry.turn}, {entry.phase.substring(0,3)}]</span> {entry.analysis}
-                    </p>
-                ))
-            ) : (
-                aiError 
-                    ? <span className="text-[var(--color-error)]">{currentAnalysis}</span>
-                    : (isLoadingThisAI && !aiError ? <span className="animate-pulse">{currentAnalysis}</span> : currentAnalysis)
-            )}
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div className="flex flex-col h-full w-full bg-[var(--color-bg-page)] text-[var(--color-text-base)] p-1 md:p-2 overflow-hidden">
       <div ref={dataDivRef} id="noospheric-conquest-container-data" style={{ display: 'none' }}></div>
-      <header className="flex-shrink-0 flex flex-col sm:flex-row justify-between items-center mb-2 p-2 bg-[var(--color-bg-panel)] rounded-md shadow-md">
-        <div className="flex items-center">
-            <h1 className="text-lg md:text-xl font-bold text-[var(--color-text-heading)] mr-2">
-            Noospheric Conquest
-            </h1>
-            <select
-                id="noosphericMapSelect"
-                value={currentMapTypeInternal}
-                onChange={handleMapTypeChange}
-                className="bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-1.5 rounded-sm focus-ring-accent text-xs appearance-none pl-3 pr-6"
-                style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236B7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem center', backgroundSize: '1em' }}
-                aria-label="Select Map"
-                disabled={isGameStarted || isLoadingAI !== null}
-            >
-            {ALL_MAP_TYPES.map(mapName => (
-                <option key={mapName} value={mapName}>{mapName}</option>
-            ))}
-            </select>
-        </div>
-        <div className="flex items-center space-x-2 mt-2 sm:mt-0">
-          <button 
-            onClick={handleStartNewGameClick}
-            className="px-3 py-1.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs font-semibold"
-            disabled={isLoadingAI !== null && isGameStarted && gameState.currentPhase !== 'GAME_OVER'}
-            aria-label={isGameStarted ? "Start New Game" : "Start Game"}
-          >
-            {isGameStarted ? 'New Game' : 'Start Game'}
-          </button>
-          <button 
-            onClick={handlePauseToggle}
-            className={`px-3 py-1.5 rounded text-xs font-semibold focus-ring-accent
-                        ${gameState.isPaused 
-                          ? 'bg-yellow-500 text-black hover:bg-yellow-400' 
-                          : 'bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] hover:bg-[var(--color-bg-button-secondary-hover)]'}`}
-            aria-label={gameState.isPaused ? "Resume Simulation" : "Pause Simulation"}
-            disabled={!isGameStarted || gameState.currentPhase === 'GAME_OVER'}
-          >
-            {gameState.isPaused ? 'Resume Sim' : 'Pause Sim'}
-          </button>
-        </div>
-      </header>
-
-      <div className="flex flex-col md:flex-row flex-grow min-h-0 gap-2">
-        <main className="flex-grow flex flex-col w-full md:w-[calc(100%-320px-0.5rem)] min-h-0"> 
-          <div className="flex-grow bg-[var(--color-bg-terminal)] border-2 border-[var(--color-border-base)] rounded-md shadow-lg p-1 md:p-2 overflow-hidden h-[65%] md:h-[calc(100%-9.5rem-0.5rem)]">
-            <NoosphericMapDisplay 
-              nodes={Object.values(gameState.mapNodes)} 
+      {renderHeader()}
+      <div className="flex flex-col md:flex-row flex-grow gap-2 min-h-0">
+        <main className="w-full md:flex-1 flex flex-col gap-2 min-h-0"> 
+          <div className="bg-[var(--color-bg-panel)] p-2 rounded-md shadow-md flex-grow min-h-0">
+            <NoosphericMapDisplay
+              nodes={Object.values(gameState.mapNodes)}
               onNodeClick={handleNodeClick}
               selectedNodeId={selectedNodeId}
-              factionColors={{
+              factionColors={{ 
                 'GEM-Q': THEMES[activeTheme]?.ai1TextColor || '#ef4444', 
-                'AXIOM': THEMES[activeTheme]?.ai2TextColor || '#22d3ee', 
-                'NEUTRAL': '#6b7280', 
+                'AXIOM': THEMES[activeTheme]?.ai2TextColor || '#22d3ee',
+                'NEUTRAL': '#6b7280',
                 'KJ_NEUTRAL': THEMES[activeTheme]?.neutralKJColor || '#eab308',
               }}
               isLoadingAI={isLoadingAI}
               activePlayer={gameState.activePlayer}
-              gameState={gameState} 
+              gameState={gameState}
             />
           </div>
-          <div className="flex-shrink-0 grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 h-[35%] md:h-[9.5rem]">
-             {renderTacticalAnalysisBox('GEM-Q', `${AI1_NAME} (Red) - Tactical Analysis`, gemQTacticalAnalysisCurrent, gameState.factions['GEM-Q'].tacticalAnalysisHistory, showGemQMainHistory, setShowGemQMainHistory)}
-             {renderTacticalAnalysisBox('AXIOM', `${AI2_NAME} (Cyan) - Tactical Analysis`, axiomTacticalAnalysisCurrent, gameState.factions['AXIOM'].tacticalAnalysisHistory, showAxiomMainHistory, setShowAxiomMainHistory)}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 h-40 flex-shrink-0">
+            {/* Tactical Analysis Box GEM-Q */}
+            <div className={`p-2 border-2 ${gameState.factions['GEM-Q'].aiError ? 'border-red-500 animate-pulse' : 'border-[var(--color-ai1-text)]'} rounded bg-[var(--color-bg-terminal)] bg-opacity-60 flex flex-col h-full overflow-hidden`}>
+              <div className="flex justify-between items-center mb-1 flex-shrink-0">
+                <h4 className="text-sm font-semibold text-[var(--color-ai1-text)]">
+                  {AI1_NAME} (S/F: {gameState.factions['GEM-Q'].successfulTurnAttempts}/{gameState.factions['GEM-Q'].failedTurnAttempts}) - Tactical Analysis
+                </h4>
+                {gameState.factions['GEM-Q'].tacticalAnalysisHistory.length > 1 && (
+                  <button onClick={() => setShowGemQMainHistory(!showGemQMainHistory)} className="text-xs px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded">
+                    {showGemQMainHistory ? 'Current' : 'History'}
+                  </button>
+                )}
+              </div>
+              <div className="text-xs text-[var(--color-text-muted)] overflow-y-auto flex-grow log-display pr-1 custom-scrollbar min-h-0">
+                {gameState.factions['GEM-Q'].aiError && <p className="text-red-400 italic mb-1">Error: {gameState.factions['GEM-Q'].aiError}</p>}
+                {showGemQMainHistory ? (
+                    gameState.factions['GEM-Q'].tacticalAnalysisHistory.slice().reverse().map((entry, idx) => (
+                        <div key={`gemq-hist-${idx}`} className={`p-1 border-b border-dashed border-gray-700 last:border-b-0 ${idx === 0 ? 'bg-black bg-opacity-20' : ''}`}>
+                            <p className="font-semibold text-gray-400 text-[10px]">T{entry.turn}, {entry.phase.substring(0,4)}:</p>
+                            <p className="whitespace-pre-wrap">{entry.analysis}</p>
+                        </div>
+                    ))
+                ) : (
+                    <p className="whitespace-pre-wrap">{gameState.factions['GEM-Q'].tacticalAnalysis || "Awaiting analysis..."}</p>
+                )}
+              </div>
+            </div>
+             {/* Tactical Analysis Box AXIOM */}
+            <div className={`p-2 border-2 ${gameState.factions['AXIOM'].aiError ? 'border-red-500 animate-pulse' : 'border-[var(--color-ai2-text)]'} rounded bg-[var(--color-bg-terminal)] bg-opacity-60 flex flex-col h-full overflow-hidden`}>
+              <div className="flex justify-between items-center mb-1 flex-shrink-0">
+                <h4 className="text-sm font-semibold text-[var(--color-ai2-text)]">
+                   {AI2_NAME} (S/F: {gameState.factions['AXIOM'].successfulTurnAttempts}/{gameState.factions['AXIOM'].failedTurnAttempts}) - Tactical Analysis
+                </h4>
+                 {gameState.factions['AXIOM'].tacticalAnalysisHistory.length > 1 && (
+                  <button onClick={() => setShowAxiomMainHistory(!showAxiomMainHistory)} className="text-xs px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded">
+                    {showAxiomMainHistory ? 'Current' : 'History'}
+                  </button>
+                )}
+              </div>
+              <div className="text-xs text-[var(--color-text-muted)] overflow-y-auto flex-grow log-display pr-1 custom-scrollbar min-h-0">
+                {gameState.factions['AXIOM'].aiError && <p className="text-red-400 italic mb-1">Error: {gameState.factions['AXIOM'].aiError}</p>}
+                {showAxiomMainHistory ? (
+                    gameState.factions['AXIOM'].tacticalAnalysisHistory.slice().reverse().map((entry, idx) => (
+                        <div key={`axiom-hist-${idx}`} className={`p-1 border-b border-dashed border-gray-700 last:border-b-0 ${idx === 0 ? 'bg-black bg-opacity-20' : ''}`}>
+                            <p className="font-semibold text-gray-400 text-[10px]">T{entry.turn}, {entry.phase.substring(0,4)}:</p>
+                            <p className="whitespace-pre-wrap">{entry.analysis}</p>
+                        </div>
+                    ))
+                ) : (
+                    <p className="whitespace-pre-wrap">{gameState.factions['AXIOM'].tacticalAnalysis || "Awaiting analysis..."}</p>
+                )}
+              </div>
+            </div>
           </div>
         </main>
-
         <NoosphericSidebar 
-          gameState={gameState} 
-          selectedNodeId={selectedNodeId}
-          isLoadingAI={isLoadingAI}
-          onOpenInfoModal={onOpenInfoModal}
-          activeTheme={activeTheme}
-          isGameStarted={isGameStarted}
-          currentAiTurnDurationDisplay={currentAiTurnDurationDisplay} 
-          averageTurnTimeDisplay={averageTurnTimeDisplay}
-          totalGameTimeMs={gameState.currentPhase === 'GAME_OVER' ? totalGameTimeMs : undefined}
-          formatDuration={formatDuration}
+            gameState={gameState} 
+            selectedNodeId={selectedNodeId}
+            isLoadingAI={isLoadingAI} 
+            onOpenInfoModal={onOpenInfoModal}
+            activeTheme={activeTheme}
+            isGameStarted={isGameStarted}
+            currentAiTurnDurationDisplay={currentAiTurnDurationDisplay}
+            averageTurnTimeDisplay={averageTurnTimeDisplay}
+            totalGameTimeMs={gameState.winner || gameState.currentPhase === 'GAME_OVER' ? totalGameTimeMs : undefined}
+            formatDuration={formatDuration}
         />
       </div>
       {latestBattleReportForModal && (
         <BattleReportModal
-          report={latestBattleReportForModal}
-          factionColors={THEMES[activeTheme]}
-          onClose={() => setLatestBattleReportForModal(null)}
+            report={latestBattleReportForModal}
+            factionColors={THEMES[activeTheme]}
+            onClose={() => setLatestBattleReportForModal(null)}
         />
       )}
-        <style>{`
+       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 6px;
           height: 6px;
@@ -1256,5 +1513,3 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     </div>
   );
 };
-
-export default NoosphericConquestContainer;

@@ -1,11 +1,15 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Chat } from '@google/genai';
-import { ChessBoardState, PlayerColor, UCIMove, PieceSymbol, AppMode, ThemeName, ChessGameRecord, ChessMoveDetail, ChessGameOutcome } from '../../types';
-import { AI1_NAME, AI2_NAME, CHESS_SIM_START_MESSAGE, SYSTEM_SENDER_NAME, THEMES, CHESS_STRATEGIES, MAX_CHESS_RETRY_ATTEMPTS } from '../../constants';
-import { 
-    fenToBoard, boardToFen, INITIAL_BOARD_FEN, uciToCoords, 
-    applyMoveToBoard, isMoveValid, getPieceUnicode 
+import { Chat, GoogleGenAI, Part, GenerateContentResponse } from '@google/genai';
+import html2canvas from 'html2canvas';
+import { ChessBoardState, PlayerColor, UCIMove, PieceSymbol, AppMode, ThemeName, ChessGameRecord, ChessMoveDetail, ChessGameOutcome, ChessPiece, ChessSystemLogEntry } from '../../types';
+import {
+    AI1_NAME, AI2_NAME, CHESS_SIM_START_MESSAGE, SYSTEM_SENDER_NAME, THEMES, CHESS_STRATEGIES, MAX_CHESS_RETRY_ATTEMPTS, AVAILABLE_MODELS,
+    OVERMIND_DATA_MASTER_SYSTEM_PROMPT, OVERMIND_DATA_MASTER_SENDER_NAME, GEMINI_MULTIMODAL_MODEL_FOR_ODM
+} from '../../constants';
+import {
+    fenToBoard, boardToFen, INITIAL_BOARD_FEN, uciToCoords,
+    applyMoveToBoard, isMoveValid, getPieceUnicode, MoveValidationResult, isFenPotentiallyValid
 } from '../../utils/chessLogic';
 import ChessBoardDisplay from './ChessBoardDisplay';
 import CoTDisplay from './CoTDisplay';
@@ -13,732 +17,1102 @@ import CoTDisplay from './CoTDisplay';
 interface ChessModeContainerProps {
   ai1Chat: Chat | null;
   ai2Chat: Chat | null;
-  addMessageToHistory: (sender: string, text: string, color?: string, isUser?: boolean, makeActiveTyping?: boolean) => string;
+  genAI?: GoogleGenAI | null;
   apiKeyMissing: boolean;
   initialFen?: string;
   initialPlayer?: PlayerColor;
   initialCoTAI1?: string;
   initialCoTAI2?: string;
   initialGameStatus?: string;
+  chessResetToken: number;
   currentAppMode: AppMode;
   onModeChange: (newMode: AppMode) => void;
   activeTheme: ThemeName;
+  onThemeChangeForApp: (themeName: ThemeName) => void;
   isAiReadyForChessFromApp: boolean;
   appInitializationError: string | null;
-  onOpenInfoModal: () => void; // Added for consistency
+  onOpenInfoModal: () => void;
 }
 
-interface CapturedPieces {
-  [PieceSymbol.QUEEN]: number;
-  [PieceSymbol.ROOK]: number;
-  [PieceSymbol.BISHOP]: number;
-  [PieceSymbol.KNIGHT]: number;
-  [PieceSymbol.PAWN]: number;
-}
-
-const INITIAL_PIECE_COUNTS: { [key in PieceSymbol]: number } = {
-  [PieceSymbol.PAWN]: 8, [PieceSymbol.ROOK]: 2, [PieceSymbol.KNIGHT]: 2,
-  [PieceSymbol.BISHOP]: 2, [PieceSymbol.QUEEN]: 1, [PieceSymbol.KING]: 1,
+const formatDuration = (ms: number): string => {
+    if (ms < 0) ms = 0;
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const tenths = Math.floor((ms % 1000) / 100);
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
 };
 
-const ChessModeContainer: React.FC<ChessModeContainerProps> = ({
+export const ChessModeContainer: React.FC<ChessModeContainerProps> = ({
   ai1Chat,
   ai2Chat,
-  addMessageToHistory,
+  genAI,
   apiKeyMissing,
-  initialFen = INITIAL_BOARD_FEN,
-  initialPlayer,
-  initialCoTAI1 = "",
-  initialCoTAI2 = "",
-  initialGameStatus,
+  initialFen: initialFenProp,
+  initialPlayer: initialPlayerProp,
+  initialCoTAI1: initialCoTAI1Prop,
+  initialCoTAI2: initialCoTAI2Prop,
+  initialGameStatus: initialGameStatusProp,
+  chessResetToken,
   currentAppMode,
   onModeChange,
   activeTheme,
+  onThemeChangeForApp,
   isAiReadyForChessFromApp,
   appInitializationError,
-  onOpenInfoModal, // Added
+  onOpenInfoModal,
 }) => {
-  const fenData = fenToBoard(initialFen);
-  const [boardState, setBoardState] = useState<ChessBoardState>(fenData.board);
-  const [currentPlayer, setCurrentPlayer] = useState<PlayerColor>(initialPlayer || fenData.currentPlayer);
-  const [fenParts, setFenParts] = useState({
-    castling: fenData.castling,
-    enPassant: fenData.enPassant,
-    halfMove: fenData.halfMove,
-    fullMove: fenData.fullMove,
-  });
-  const [gameStatus, setGameStatus] = useState<string>(initialGameStatus || `${fenData.currentPlayer === PlayerColor.WHITE ? 'White' : 'Black'} to move.`);
-  const [cotAI1, setCotAI1] = useState<string>(initialCoTAI1);
-  const [cotAI2, setCotAI2] = useState<string>(initialCoTAI2);
-  const [isLoadingAI, setIsLoadingAI] = useState<PlayerColor | null>(null);
-  const [lastMove, setLastMove] = useState<UCIMove | null>(null);
-  const [moveHistoryUI, setMoveHistoryUI] = useState<Array<{ moveNumber: number, player: PlayerColor, uci: string }>>([]);
-  
-  const [capturedByWhite, setCapturedByWhite] = useState<CapturedPieces>({ q:0, r:0, b:0, n:0, p:0 });
-  const [capturedByBlack, setCapturedByBlack] = useState<CapturedPieces>({ q:0, r:0, b:0, n:0, p:0 });
+  const [currentFen, setCurrentFen] = useState<string>(initialFenProp || INITIAL_BOARD_FEN);
+  const [boardState, setBoardState] = useState<ChessBoardState>(fenToBoard(currentFen).board);
+  const [currentPlayer, setCurrentPlayer] = useState<PlayerColor>(initialPlayerProp || PlayerColor.WHITE);
+  const [gameStatus, setGameStatus] = useState<string>(initialGameStatusProp || "Select strategies and click 'New Game' to begin.");
+  const [isGameStarted, setIsGameStarted] = useState(!!initialGameStatusProp);
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [isGamePaused, setIsGamePaused] = useState(false);
+  const [isInvokingOvermind, setIsInvokingOvermind] = useState(false);
+
+  const [ai1CoT, setAi1CoT] = useState(initialCoTAI1Prop || "");
+  const [ai2CoT, setAi2CoT] = useState(initialCoTAI2Prop || "");
+  const [ai1CoTHistory, setAi1CoTHistory] = useState<ChessMoveDetail[]>([]);
+  const [ai2CoTHistory, setAi2CoTHistory] = useState<ChessMoveDetail[]>([]);
+  const [ai1SuccessTurns, setAi1SuccessTurns] = useState(0);
+  const [ai1FailedTurns, setAi1FailedTurns] = useState(0);
+  const [ai2SuccessTurns, setAi2SuccessTurns] = useState(0);
+  const [ai2FailedTurns, setAi2FailedTurns] = useState(0);
+
+  const [moveHistory, setMoveHistory] = useState<ChessMoveDetail[]>([]);
+  const [systemLog, setSystemLog] = useState<ChessSystemLogEntry[]>([]);
+  const [capturedPieces, setCapturedPieces] = useState<{ white: ChessPiece[], black: ChessPiece[] }>({ white: [], black: [] });
+
+  const [gameHistoryArchive, setGameHistoryArchive] = useState<ChessGameRecord[]>([]);
+  const [sessionGameOutcomes, setSessionGameOutcomes] = useState<ChessGameOutcome[]>([]);
+  const [currentStreak, setCurrentStreak] = useState<{ player: PlayerColor | 'draw' | null, count: number }>({ player: null, count: 0 });
+  const [longestWhiteStreak, setLongestWhiteStreak] = useState(0);
+  const [longestBlackStreak, setLongestBlackStreak] = useState(0);
+
+  const [parsedFenData, setParsedFenData] = useState(fenToBoard(currentFen));
+  const lastMoveUciCoords = useRef<UCIMove | null>(null);
+  const chessBoardDisplayRef = useRef<HTMLDivElement>(null);
+  const originalThemeBeforeOdmRef = useRef<ThemeName>(activeTheme);
 
   const [ai1Strategy, setAi1Strategy] = useState<string>(CHESS_STRATEGIES[0].id);
   const [ai2Strategy, setAi2Strategy] = useState<string>(CHESS_STRATEGIES[0].id);
-  const [totalMoveTimeMs, setTotalMoveTimeMs] = useState(0);
-  const [completedMovesForAvg, setCompletedMovesForAvg] = useState(0);
 
-  const [isGameStarted, setIsGameStarted] = useState(false);
   const gameIsOverRef = useRef(false);
-  const currentMoveNumberRef = useRef(fenData.fullMove); 
-  
   const dataDivRef = useRef<HTMLDivElement>(null);
+  const isMountedRef = useRef(true);
+  const currentGameStartTimeRef = useRef<string | null>(null);
+  const gameStateRef = useRef({ isPaused: isGamePaused, currentFen: currentFen, currentPlayer: currentPlayer });
 
-  // State for game history and stats
-  const [currentGameMoves, setCurrentGameMoves] = useState<ChessMoveDetail[]>([]);
-  const [gameHistoryArchive, setGameHistoryArchive] = useState<ChessGameRecord[]>([]);
-  const [whiteWins, setWhiteWins] = useState(0);
-  const [blackWins, setBlackWins] = useState(0);
-  const [draws, setDraws] = useState(0);
-  const [currentStreak, setCurrentStreak] = useState<{ player: PlayerColor | 'draw' | null; count: number }>({ player: null, count: 0 });
-  const [longestWhiteStreak, setLongestWhiteStreak] = useState(0);
-  const [longestBlackStreak, setLongestBlackStreak] = useState(0);
-  const [autoRestartCountdown, setAutoRestartCountdown] = useState<number | null>(null);
-  const autoRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [currentAiTurnDurationDisplay, setCurrentAiTurnDurationDisplay] = useState<string>("--:--.-");
+  const [lastTurnDurationDisplay, setLastTurnDurationDisplay] = useState<string>("--:--.-");
+  const [averageTurnTimeDisplay, setAverageTurnTimeDisplay] = useState<string>("--:--.-");
+  const [totalGameTimeDisplay, setTotalGameTimeDisplay] = useState<string>("--:--.-");
 
+  const aiTurnStartTimeRef = useRef<number | null>(null);
+  const elapsedAiTurnTimeBeforePauseRef = useRef<number>(0);
+  const gameStartTimestampRef = useRef<number | null>(null);
+  const elapsedGameTimeBeforePauseRef = useRef<number>(0);
+  const allTurnDurationsMsRef = useRef<number[]>([]);
+  const displayUpdateIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialSetupDoneRef = useRef(false); 
 
-  useEffect(() => {
-    if (dataDivRef.current) {
-      dataDivRef.current.dataset.currentFen = boardToFen(boardState, currentPlayer, fenParts.castling, fenParts.enPassant, fenParts.halfMove, fenParts.fullMove);
-      dataDivRef.current.dataset.currentPlayer = currentPlayer;
-      dataDivRef.current.dataset.cotAi1 = cotAI1;
-      dataDivRef.current.dataset.cotAi2 = cotAI2;
-      dataDivRef.current.dataset.gameStatus = gameStatus;
-    }
-  }, [boardState, currentPlayer, fenParts, cotAI1, cotAI2, gameStatus]);
+  const isOverallAiReady = isAiReadyForChessFromApp && !!ai1Chat && !!ai2Chat && !apiKeyMissing && !appInitializationError;
 
-  const isOverallAiReady = isAiReadyForChessFromApp && !!ai1Chat && !!ai2Chat && !apiKeyMissing;
-
-  const resetGameCoreState = (startMessage?: string) => {
-    const startingFenData = fenToBoard(INITIAL_BOARD_FEN);
-    setBoardState(startingFenData.board);
-    setCurrentPlayer(startingFenData.currentPlayer);
-    setFenParts({
-        castling: startingFenData.castling,
-        enPassant: startingFenData.enPassant,
-        halfMove: startingFenData.halfMove,
-        fullMove: startingFenData.fullMove,
-    });
-    setCotAI1("");
-    setCotAI2("");
-    setLastMove(null);
-    setMoveHistoryUI([]);
-    setCurrentGameMoves([]);
-    gameIsOverRef.current = false;
-    currentMoveNumberRef.current = startingFenData.fullMove;
-    setGameStatus(startMessage || `${startingFenData.currentPlayer === PlayerColor.WHITE ? 'White' : 'Black'} to move.`);
-    if (autoRestartTimerRef.current) clearTimeout(autoRestartTimerRef.current);
-    setAutoRestartCountdown(null);
-  };
-
-  const handleStartGame = () => {
+  const handleNewGame = useCallback(() => {
+    if (isLoadingAI || isInvokingOvermind) return; 
+    initialSetupDoneRef.current = false; 
+    resetGameRef.current(true); 
     if (isOverallAiReady) {
-      setIsGameStarted(true);
-      setTotalMoveTimeMs(0); 
-      setCompletedMovesForAvg(0);
-      resetGameCoreState(CHESS_SIM_START_MESSAGE);
-      addMessageToHistory(SYSTEM_SENDER_NAME, CHESS_SIM_START_MESSAGE, 'text-[var(--color-facilitator)]', false, false);
+      setTimeout(() => makeAIMoveRef.current(PlayerColor.WHITE, INITIAL_BOARD_FEN), 100);
     }
-  };
+  }, [isLoadingAI, isInvokingOvermind, isOverallAiReady]);
   
-  const handleManualNewGame = () => {
-     if (isOverallAiReady) {
-        setIsGameStarted(true); // Ensure game can start even if it was stopped/errored
-        setTotalMoveTimeMs(0);
-        setCompletedMovesForAvg(0);
-        resetGameCoreState("New game started. White to move.");
-        addMessageToHistory(SYSTEM_SENDER_NAME, "Manual New Game Started. GEM-Q (White) to move.", 'text-[var(--color-facilitator)]', false, false);
-     }
-  };
+  const handleNewGameRef = useRef(handleNewGame);
+  useEffect(() => { handleNewGameRef.current = handleNewGame; }, [handleNewGame]);
 
-  const calculateCapturedPieces = useCallback(() => {
-    const currentCountsWhite: Partial<Record<PieceSymbol, number>> = {};
-    const currentCountsBlack: Partial<Record<PieceSymbol, number>> = {};
-
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const piece = boardState[r][c];
-        if (piece) {
-          if (piece.color === PlayerColor.WHITE) {
-            currentCountsWhite[piece.symbol] = (currentCountsWhite[piece.symbol] || 0) + 1;
-          } else {
-            currentCountsBlack[piece.symbol] = (currentCountsBlack[piece.symbol] || 0) + 1;
-          }
-        }
-      }
-    }
-
-    const newCapturedByWhite: CapturedPieces = { q:0, r:0, b:0, n:0, p:0 };
-    const newCapturedByBlack: CapturedPieces = { q:0, r:0, b:0, n:0, p:0 };
-
-    (Object.keys(INITIAL_PIECE_COUNTS) as PieceSymbol[]).forEach(symbol => {
-      if (symbol === PieceSymbol.KING) return; 
-      newCapturedByWhite[symbol] = INITIAL_PIECE_COUNTS[symbol] - (currentCountsBlack[symbol] || 0);
-      newCapturedByBlack[symbol] = INITIAL_PIECE_COUNTS[symbol] - (currentCountsWhite[symbol] || 0);
-    });
-    setCapturedByWhite(newCapturedByWhite);
-    setCapturedByBlack(newCapturedByBlack);
-  }, [boardState]);
 
   useEffect(() => {
-    calculateCapturedPieces();
-  }, [boardState, calculateCapturedPieces]);
-
-  const getGamePhase = (moveNum: number): string => {
-    if (moveNum <= 10) return "Opening";
-    if (moveNum <= 30) return "Middlegame";
-    return "Endgame";
-  };
-
-  const handleGameEnd = useCallback((reason: string, winner?: PlayerColor | 'draw' | 'error') => {
-    gameIsOverRef.current = true;
-    const outcome: ChessGameOutcome = { winner: winner || 'error', reason };
-    const gameRecord: ChessGameRecord = {
-      id: `game-${Date.now()}`,
-      startTime: gameHistoryArchive[gameHistoryArchive.length -1]?.endTime || new Date(Date.now() - currentGameMoves.reduce((acc, m) => acc + m.timeTakenMs, 0)).toISOString(), // Approx if no previous
-      endTime: new Date().toISOString(),
-      moves: [...currentGameMoves],
-      outcome,
-      ai1StrategyInitial: CHESS_STRATEGIES.find(s=>s.id === ai1Strategy)?.name || ai1Strategy,
-      ai2StrategyInitial: CHESS_STRATEGIES.find(s=>s.id === ai2Strategy)?.name || ai2Strategy,
-      finalFEN: boardToFen(boardState, currentPlayer, fenParts.castling, fenParts.enPassant, fenParts.halfMove, fenParts.fullMove),
+    gameStateRef.current = { 
+        isPaused: isGamePaused,
+        currentFen: currentFen,
+        currentPlayer: currentPlayer
     };
-    setGameHistoryArchive(prev => [...prev, gameRecord]);
+  }, [isGamePaused, currentFen, currentPlayer]);
 
-    if (winner === PlayerColor.WHITE) {
-      setWhiteWins(w => w + 1);
-      if (currentStreak.player === PlayerColor.WHITE) {
-        const newCount = currentStreak.count + 1;
-        setCurrentStreak({ player: PlayerColor.WHITE, count: newCount});
-        setLongestWhiteStreak(Math.max(longestWhiteStreak, newCount));
-      } else {
-        setCurrentStreak({ player: PlayerColor.WHITE, count: 1 });
-        setLongestWhiteStreak(Math.max(longestWhiteStreak, 1));
-      }
-    } else if (winner === PlayerColor.BLACK) {
-      setBlackWins(b => b + 1);
-      if (currentStreak.player === PlayerColor.BLACK) {
-        const newCount = currentStreak.count + 1;
-        setCurrentStreak({ player: PlayerColor.BLACK, count: newCount});
-        setLongestBlackStreak(Math.max(longestBlackStreak, newCount));
-      } else {
-        setCurrentStreak({ player: PlayerColor.BLACK, count: 1 });
-        setLongestBlackStreak(Math.max(longestBlackStreak, 1));
-      }
-    } else if (winner === 'draw') {
-      setDraws(d => d + 1);
-      setCurrentStreak({ player: 'draw', count: (currentStreak.player === 'draw' ? currentStreak.count + 1 : 1) });
-    } else { // Error
-      setCurrentStreak({ player: null, count: 0 });
-    }
-    
-    setAutoRestartCountdown(5);
-    setGameStatus(`${reason} New game in 5s...`);
-  }, [currentGameMoves, ai1Strategy, ai2Strategy, boardState, currentPlayer, fenParts, currentStreak, longestWhiteStreak, longestBlackStreak, gameHistoryArchive]);
+  const addSystemLogEntry = useCallback((
+    type: ChessSystemLogEntry['type'],
+    message: string,
+    player?: PlayerColor | typeof OVERMIND_DATA_MASTER_SENDER_NAME
+  ) => {
+    if (!isMountedRef.current) return;
+    setSystemLog(prev => [
+        ...prev,
+        {
+            id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+            timestamp: new Date().toISOString(),
+            message,
+            type,
+            player: player 
+        }
+    ].slice(-100));
+  }, []);
 
-  const startNewGameAutomatically = useCallback(() => {
-    resetGameCoreState("New game started. White to move.");
-    addMessageToHistory(SYSTEM_SENDER_NAME, "New game started automatically. GEM-Q (White) to move.", 'text-[var(--color-facilitator)]', false, false);
-    setTotalMoveTimeMs(0); // Reset for new game's average
-    setCompletedMovesForAvg(0);
-  }, [addMessageToHistory]);
 
   useEffect(() => {
-    if (autoRestartCountdown !== null) {
-      if (autoRestartCountdown > 0) {
-        if (autoRestartTimerRef.current) clearTimeout(autoRestartTimerRef.current);
-        autoRestartTimerRef.current = setTimeout(() => {
-          setAutoRestartCountdown(val => (val !== null ? val - 1 : null));
-          if (autoRestartCountdown -1 > 0) {
-            setGameStatus(prevStatus => prevStatus.replace(/in \d+s/, `in ${autoRestartCountdown - 1}s`));
-          } else if (autoRestartCountdown -1 === 0) {
-            setGameStatus(prevStatus => prevStatus.replace(/in \d+s.../, 'starting now...'));
-          }
-        }, 1000);
-      } else if (autoRestartCountdown === 0) {
-        startNewGameAutomatically();
-      }
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (displayUpdateIntervalRef.current) clearInterval(displayUpdateIntervalRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (dataDivRef.current && isGameStarted) {
+      dataDivRef.current.dataset.chessBoardFen = currentFen;
+      dataDivRef.current.dataset.chessCurrentPlayer = currentPlayer;
+      dataDivRef.current.dataset.chessCoTAI1 = ai1CoT;
+      dataDivRef.current.dataset.chessCoTAI2 = ai2CoT;
+      dataDivRef.current.dataset.chessGameStatus = gameStatus;
     }
-    return () => { if (autoRestartTimerRef.current) clearTimeout(autoRestartTimerRef.current); };
-  }, [autoRestartCountdown, startNewGameAutomatically]);
+  }, [currentFen, currentPlayer, ai1CoT, ai2CoT, gameStatus, isGameStarted]);
 
 
-  const makeAIMove = useCallback(async () => {
-    if (apiKeyMissing || gameIsOverRef.current || !isGameStarted || !isOverallAiReady) return;
+  const updateSessionStats = (outcome: ChessGameOutcome) => {
+    setSessionGameOutcomes(prev => [...prev, outcome]);
+    if (outcome.winner === PlayerColor.WHITE) {
+        if (currentStreak.player === PlayerColor.WHITE) {
+            const newCount = currentStreak.count + 1;
+            setCurrentStreak({ player: PlayerColor.WHITE, count: newCount});
+            setLongestWhiteStreak(prev => Math.max(prev, newCount));
+        } else {
+            setCurrentStreak({ player: PlayerColor.WHITE, count: 1 });
+            setLongestWhiteStreak(prev => Math.max(prev, 1));
+        }
+    } else if (outcome.winner === PlayerColor.BLACK) {
+         if (currentStreak.player === PlayerColor.BLACK) {
+            const newCount = currentStreak.count + 1;
+            setCurrentStreak({ player: PlayerColor.BLACK, count: newCount});
+            setLongestBlackStreak(prev => Math.max(prev, newCount));
+        } else {
+            setCurrentStreak({ player: PlayerColor.BLACK, count: 1 });
+            setLongestBlackStreak(prev => Math.max(prev, 1));
+        }
+    } else {
+        setCurrentStreak({player: 'draw', count: 1});
+    }
+  };
 
-    const currentAiChat = currentPlayer === PlayerColor.WHITE ? ai1Chat : ai2Chat;
-    const currentAiName = currentPlayer === PlayerColor.WHITE ? AI1_NAME : AI2_NAME;
-    const currentStrategyId = currentPlayer === PlayerColor.WHITE ? ai1Strategy : ai2Strategy;
-    const currentStrategyName = CHESS_STRATEGIES.find(s => s.id === currentStrategyId)?.name || "Balanced";
+  const archiveCurrentGame = useCallback((outcome: ChessGameOutcome) => {
+    if (!currentGameStartTimeRef.current || gameIsOverRef.current) return; 
+    gameIsOverRef.current = true; 
+    const gameRecord: ChessGameRecord = {
+        id: `game-${Date.now()}`,
+        startTime: currentGameStartTimeRef.current,
+        endTime: new Date().toISOString(),
+        moves: [...moveHistory],
+        outcome: outcome,
+        ai1StrategyInitial: ai1Strategy,
+        ai2StrategyInitial: ai2Strategy,
+        finalFEN: gameStateRef.current.currentFen, 
+    };
+    setGameHistoryArchive(prev => [...prev, gameRecord].slice(-20));
+    updateSessionStats(outcome);
+    setGameStatus(`Game Over. ${outcome.reason}. Winner: ${outcome.winner === 'draw' ? 'Draw' : (outcome.winner === PlayerColor.WHITE ? AI1_NAME : AI2_NAME)}`);
+    addSystemLogEntry('EVENT', `Game Over. ${outcome.reason}. Winner: ${outcome.winner === 'draw' ? 'Draw' : (outcome.winner === PlayerColor.WHITE ? AI1_NAME : AI2_NAME)}`);
     
-    if (!currentAiChat) {
-      const errorMessage = `${currentAiName} is not available (chat instance is null).`;
-      addMessageToHistory(SYSTEM_SENDER_NAME, errorMessage, 'text-[var(--color-error)]', false, false);
-      handleGameEnd(`${currentAiName} unavailable. Game over.`, 'error');
-      setIsLoadingAI(null);
+    if (gameStartTimestampRef.current) {
+        const finalTotalGameTime = elapsedGameTimeBeforePauseRef.current + (Date.now() - gameStartTimestampRef.current);
+        setTotalGameTimeDisplay(formatDuration(finalTotalGameTime));
+    }
+    gameStartTimestampRef.current = null;
+    aiTurnStartTimeRef.current = null;
+    if (displayUpdateIntervalRef.current) clearInterval(displayUpdateIntervalRef.current);
+    displayUpdateIntervalRef.current = null;
+
+    addSystemLogEntry('EVENT', `Game archived. New game will start in 3 seconds.`);
+    setTimeout(() => {
+        if (isMountedRef.current) {
+            handleNewGameRef.current();
+        }
+    }, 3000); 
+
+  }, [moveHistory, ai1Strategy, ai2Strategy, addSystemLogEntry]);
+
+  const applyValidatedMoveToBoard = useCallback((
+    moveCoords: UCIMove,
+    validationResult: MoveValidationResult,
+    playerMoving: PlayerColor,
+    fenForThisMove: string,
+    moveSource: typeof AI1_NAME | typeof AI2_NAME | typeof OVERMIND_DATA_MASTER_SENDER_NAME,
+    cotTextForMove: string,
+    strategyForMove: string
+  ): string => {
+        if (gameIsOverRef.current) { 
+            addSystemLogEntry('EVENT', `Attempted to apply move after game ended. Move ignored: ${String.fromCharCode(97 + moveCoords.from.col)}${8 - moveCoords.from.row}${String.fromCharCode(97 + moveCoords.to.col)}${8 - moveCoords.to.row}`, playerMoving);
+            return fenForThisMove;
+        }
+        const currentBoard = fenToBoard(fenForThisMove).board;
+        const currentFenParts = fenToBoard(fenForThisMove);
+        const newBoardAfterMove = applyMoveToBoard(currentBoard, moveCoords);
+
+        const pieceThatMoved = currentBoard[moveCoords.from.row][moveCoords.from.col];
+
+        let newHalfMoveClockValue = (currentFenParts.halfMove || 0) + 1;
+        if (pieceThatMoved?.symbol === PieceSymbol.PAWN || validationResult.isCapture) {
+            newHalfMoveClockValue = 0;
+        }
+
+        let newEnPassantTargetValue = "-";
+        if (pieceThatMoved?.symbol === PieceSymbol.PAWN) {
+            const rowDiff = Math.abs(moveCoords.to.row - moveCoords.from.row);
+            if (rowDiff === 2) {
+                const enPassantRow = playerMoving === PlayerColor.WHITE ? moveCoords.to.row + 1 : moveCoords.to.row - 1;
+                newEnPassantTargetValue = `${String.fromCharCode(97 + moveCoords.to.col)}${8 - enPassantRow}`;
+            }
+        }
+
+        let newCastlingRights = currentFenParts.castling;
+        if (pieceThatMoved?.symbol === PieceSymbol.KING) {
+            if (playerMoving === PlayerColor.WHITE) newCastlingRights = newCastlingRights.replace('K', '').replace('Q', '');
+            else newCastlingRights = newCastlingRights.replace('k', '').replace('q', '');
+        } else if (pieceThatMoved?.symbol === PieceSymbol.ROOK) {
+            if (playerMoving === PlayerColor.WHITE) {
+                if (moveCoords.from.row === 7 && moveCoords.from.col === 0) newCastlingRights = newCastlingRights.replace('Q', '');
+                if (moveCoords.from.row === 7 && moveCoords.from.col === 7) newCastlingRights = newCastlingRights.replace('K', '');
+            } else {
+                if (moveCoords.from.row === 0 && moveCoords.from.col === 0) newCastlingRights = newCastlingRights.replace('q', '');
+                if (moveCoords.from.row === 0 && moveCoords.from.col === 7) newCastlingRights = newCastlingRights.replace('k', '');
+            }
+        }
+        if (validationResult.capturedPiece?.symbol === PieceSymbol.ROOK) {
+            if (moveCoords.to.row === 0 && moveCoords.to.col === 0) newCastlingRights = newCastlingRights.replace('q', ''); 
+            if (moveCoords.to.row === 0 && moveCoords.to.col === 7) newCastlingRights = newCastlingRights.replace('k', ''); 
+            if (moveCoords.to.row === 7 && moveCoords.to.col === 0) newCastlingRights = newCastlingRights.replace('Q', ''); 
+            if (moveCoords.to.row === 7 && moveCoords.to.col === 7) newCastlingRights = newCastlingRights.replace('K', ''); 
+        }
+        if (newCastlingRights === "") newCastlingRights = "-";
+
+        const newFullMoveNumberValue = playerMoving === PlayerColor.BLACK ? (currentFenParts.fullMove || 0) + 1 : (currentFenParts.fullMove || 1);
+        const nextPlayerTurn = playerMoving === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
+        let nextFenForNextPlayer = boardToFen(newBoardAfterMove, nextPlayerTurn, newCastlingRights, newEnPassantTargetValue, newHalfMoveClockValue, newFullMoveNumberValue);
+
+        setBoardState(newBoardAfterMove);
+        setCurrentFen(nextFenForNextPlayer);
+        setParsedFenData(fenToBoard(nextFenForNextPlayer));
+        lastMoveUciCoords.current = moveCoords;
+
+        const moveDetail: ChessMoveDetail = {
+          player: playerMoving,
+          uci: `${String.fromCharCode(97 + moveCoords.from.col)}${8 - moveCoords.from.row}${String.fromCharCode(97 + moveCoords.to.col)}${8 - moveCoords.to.row}${moveCoords.promotion || ''}`,
+          cot: cotTextForMove,
+          strategy: strategyForMove,
+          moveTimestamp: Date.now(),
+          timeTakenMs: aiTurnStartTimeRef.current && moveSource !== OVERMIND_DATA_MASTER_SENDER_NAME ? Date.now() - aiTurnStartTimeRef.current : 0
+        };
+        setMoveHistory(prev => [...prev, moveDetail]);
+        if (playerMoving === PlayerColor.WHITE && moveSource !== OVERMIND_DATA_MASTER_SENDER_NAME) setAi1CoTHistory(prev => [...prev, moveDetail].slice(-20));
+        else if (playerMoving === PlayerColor.BLACK && moveSource !== OVERMIND_DATA_MASTER_SENDER_NAME) setAi2CoTHistory(prev => [...prev, moveDetail].slice(-20));
+
+        if (validationResult.isCapture && validationResult.capturedPiece) {
+            setCapturedPieces(prev => {
+                const newCaptured = { ...prev };
+                if (validationResult.capturedPiece!.color === PlayerColor.BLACK) newCaptured.white.push(validationResult.capturedPiece!);
+                else newCaptured.black.push(validationResult.capturedPiece!);
+                return newCaptured;
+            });
+            addSystemLogEntry('CAPTURE', `${moveSource} captured ${getPieceUnicode(validationResult.capturedPiece!.symbol, validationResult.capturedPiece!.color)} on ${String.fromCharCode(97 + moveCoords.to.col)}${8 - moveCoords.to.row}.`, playerMoving);
+        } else if (pieceThatMoved?.symbol === PieceSymbol.PAWN && currentFenParts.enPassant !== "-" &&
+                   uciToCoords(currentFenParts.enPassant)?.to.row === moveCoords.to.row &&
+                   uciToCoords(currentFenParts.enPassant)?.to.col === moveCoords.to.col &&
+                   Math.abs(moveCoords.from.col - moveCoords.to.col) === 1 &&
+                   !currentBoard[moveCoords.to.row][moveCoords.to.col]) {
+
+            const capturedPawnRow = playerMoving === PlayerColor.WHITE ? moveCoords.to.row + 1 : moveCoords.to.row - 1;
+            const capturedPawnCol = moveCoords.to.col;
+            const epCapturedPieceDetails = currentBoard[capturedPawnRow]?.[capturedPawnCol];
+            if (epCapturedPieceDetails && epCapturedPieceDetails.symbol === PieceSymbol.PAWN) {
+                newBoardAfterMove[capturedPawnRow][capturedPawnCol] = null; 
+                nextFenForNextPlayer = boardToFen(newBoardAfterMove, nextPlayerTurn, newCastlingRights, newEnPassantTargetValue, newHalfMoveClockValue, newFullMoveNumberValue);
+                setCurrentFen(nextFenForNextPlayer); 
+                setBoardState(newBoardAfterMove);
+                setParsedFenData(fenToBoard(nextFenForNextPlayer));
+
+                setCapturedPieces(prev => {
+                    const newCaptured = { ...prev };
+                    if (epCapturedPieceDetails.color === PlayerColor.BLACK) newCaptured.white.push(epCapturedPieceDetails);
+                    else newCaptured.black.push(epCapturedPieceDetails);
+                    return newCaptured;
+                });
+                addSystemLogEntry('CAPTURE', `${moveSource} captured en passant on ${String.fromCharCode(97 + moveCoords.to.col)}${8 - moveCoords.to.row}.`, playerMoving);
+            }
+        }
+
+        setCurrentPlayer(nextPlayerTurn);
+        setGameStatus(`${moveSource} played ${moveDetail.uci}. ${nextPlayerTurn === PlayerColor.WHITE ? AI1_NAME : AI2_NAME} to move.`);
+        return nextFenForNextPlayer;
+  }, [addSystemLogEntry]);
+
+
+  const invokeOvermindDataMaster = useCallback(async (
+    failingPlayer: PlayerColor,
+    fenAtFailure: string,
+    lastErrorReason: string,
+    failingAiName: string,
+    failingAiStrategyId: string
+  ) => {
+    if (!genAI || !chessBoardDisplayRef.current) {
+      addSystemLogEntry('ERROR', "Overmind Data Master cannot be invoked: Missing GenAI instance or board reference.", failingPlayer);
+      archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: "ODM Invocation Error." });
+      setIsLoadingAI(false);
       return;
     }
 
-    let uciMoveString: string | null = null;
-    let cotText: string = "AI did not provide Chain of Thought or it was malformed.";
-    let parsedMove: UCIMove | null = null;
-    let lastErrorForRetryPrompt: string | null = null;
-    let moveProcessedSuccessfully = false;
-    let timeTakenMs = 0;
+    originalThemeBeforeOdmRef.current = activeTheme;
+    onThemeChangeForApp('cyanotype');
+    setIsInvokingOvermind(true);
+    addSystemLogEntry('EVENT', `${failingAiName} failed all attempts. Consulting Overmind Data Master...`, failingPlayer);
+    setGameStatus(`${failingAiName} failed. Consulting Overmind...`);
+
+    let nextFenAfterODM = fenAtFailure;
+
+    try {
+      const canvas = await html2canvas(chessBoardDisplayRef.current, {
+        scale: 1,
+        logging: false,
+        useCORS: true,
+        backgroundColor: null
+      });
+      const imageDataUrl = canvas.toDataURL('image/png');
+      const base64ImageData = imageDataUrl.split(',')[1];
+
+      const imagePart: Part = { inlineData: { mimeType: 'image/png', data: base64ImageData } };
+
+      let odmPromptText = OVERMIND_DATA_MASTER_SYSTEM_PROMPT;
+      odmPromptText = odmPromptText.replace('{{FEN}}', fenAtFailure);
+      odmPromptText = odmPromptText.replace(/{{PLAYER_COLOR}}/g, failingPlayer === PlayerColor.WHITE ? "White" : "Black");
+      odmPromptText = odmPromptText.replace('{{AI_NAME}}', failingAiName);
+      odmPromptText = odmPromptText.replace('{{STRATEGY_NAME}}', CHESS_STRATEGIES.find(s => s.id === failingAiStrategyId)?.name || failingAiStrategyId);
+      odmPromptText = odmPromptText.replace('{{LAST_ERROR}}', lastErrorReason.substring(0, 200));
+
+      const textPart: Part = { text: odmPromptText };
+
+      const response = await genAI.models.generateContent({
+          model: GEMINI_MULTIMODAL_MODEL_FOR_ODM,
+          contents: { parts: [textPart, imagePart] },
+      });
+      const odmResponseText = response.text;
+
+      if (odmResponseText.trim().toUpperCase() === 'NO_LEGAL_MOVES') {
+        addSystemLogEntry('EVENT', "Overmind Data Master confirms: NO_LEGAL_MOVES for " + failingAiName, OVERMIND_DATA_MASTER_SENDER_NAME);
+        archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `${failingAiName} has no legal moves (confirmed by ODM).` });
+      } else {
+        const moveMatch = odmResponseText.match(/MOVE:\s*([a-h][1-8][a-h][1-8][qrbn]?)/);
+        const cotMatch = odmResponseText.match(/COT:\s*([\s\S]*)/);
+        const odmCoT = cotMatch?.[1]?.trim() || "ODM provided a move without detailed CoT.";
+
+        if (moveMatch && moveMatch[1]) {
+          const odmUciMove = moveMatch[1];
+          const odmMoveCoords = uciToCoords(odmUciMove);
+          const currentBoard = fenToBoard(fenAtFailure).board;
+          const currentFenParts = fenToBoard(fenAtFailure);
+
+          if (odmMoveCoords) {
+            const validationResult = isMoveValid(currentBoard, odmMoveCoords, failingPlayer, currentFenParts.enPassant);
+            if (validationResult.isValid) {
+              addSystemLogEntry('MOVE', `Overmind Intervention: ${OVERMIND_DATA_MASTER_SENDER_NAME} plays ${odmUciMove} for ${failingAiName}.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+              addSystemLogEntry('COT', `${OVERMIND_DATA_MASTER_SENDER_NAME} CoT: ${odmCoT}`, OVERMIND_DATA_MASTER_SENDER_NAME);
+              
+              nextFenAfterODM = applyValidatedMoveToBoard(
+                odmMoveCoords, 
+                validationResult, 
+                failingPlayer, 
+                fenAtFailure, 
+                OVERMIND_DATA_MASTER_SENDER_NAME, 
+                odmCoT, 
+                "Overmind Intervention"
+              );
+
+              const { isValid: isFenValidAfterODM, reason: fenInvalidReasonAfterODM } = isFenPotentiallyValid(nextFenAfterODM);
+              if (!isFenValidAfterODM) {
+                  archiveCurrentGame({ winner: 'draw', reason: `Invalid FEN after ODM move: ${fenInvalidReasonAfterODM || 'Unknown'}` });
+              } else {
+                  const fenPartsAfterODM = fenToBoard(nextFenAfterODM);
+                  if (fenPartsAfterODM.halfMove >= 150) { // Updated to 150 for 75-move rule
+                      archiveCurrentGame({ winner: 'draw', reason: '75-move rule after ODM move' });
+                  } else {
+                      const nextPlayerToMoveAfterODM = failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
+                      if (!gameStateRef.current.isPaused && !gameIsOverRef.current) {
+                          addSystemLogEntry('EVENT', `Game continues. ${nextPlayerToMoveAfterODM === PlayerColor.WHITE ? AI1_NAME : AI2_NAME} to move.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+                          setTimeout(() => {
+                              if (isMountedRef.current && !gameStateRef.current.isPaused && !gameIsOverRef.current) {
+                                  makeAIMoveRef.current(nextPlayerToMoveAfterODM, nextFenAfterODM);
+                              }
+                          }, 100);
+                      }
+                  }
+              }
+            } else {
+              addSystemLogEntry('ERROR', `Overmind Data Master proposed an invalid move (${odmUciMove}): ${validationResult.reason}. Game ends.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+              archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `ODM proposed invalid move.` });
+            }
+          } else {
+            addSystemLogEntry('ERROR', `Overmind Data Master response move format error: ${odmUciMove}. Game ends.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+            archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `ODM response format error.` });
+          }
+        } else {
+          addSystemLogEntry('ERROR', `Overmind Data Master did not provide a move in expected format. Response: ${odmResponseText.substring(0,100)}. Game ends.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+          archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `ODM response error.` });
+        }
+      }
+    } catch (error) {
+      console.error("Error during Overmind Data Master invocation:", error);
+      addSystemLogEntry('ERROR', `Overmind Data Master invocation failed: ${error instanceof Error ? error.message : "Unknown error"}. Game ends.`, OVERMIND_DATA_MASTER_SENDER_NAME);
+      archiveCurrentGame({ winner: failingPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: "ODM System Error." });
+    } finally {
+      setIsInvokingOvermind(false);
+      setIsLoadingAI(false);
+       if (aiTurnStartTimeRef.current) {
+           const turnDuration = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+           setLastTurnDurationDisplay(formatDuration(turnDuration));
+           setCurrentAiTurnDurationDisplay(formatDuration(turnDuration));
+       }
+       aiTurnStartTimeRef.current = null;
+       onThemeChangeForApp(originalThemeBeforeOdmRef.current);
+    }
+  }, [genAI, addSystemLogEntry, archiveCurrentGame, applyValidatedMoveToBoard, activeTheme, onThemeChangeForApp]);
+
+
+  const makeAIMoveInternal = useCallback(async (player: PlayerColor, fenForThisAIsTurn: string) => {
+    if (apiKeyMissing || gameIsOverRef.current || !isOverallAiReady || gameStateRef.current.isPaused || isInvokingOvermind) {
+      setIsLoadingAI(false);
+      if (apiKeyMissing || !isOverallAiReady) {
+        addSystemLogEntry('ERROR', `AI move cannot proceed. apiKeyMissing: ${apiKeyMissing}, isOverallAiReady: ${isOverallAiReady}`, player);
+      }
+      return;
+    }
+    
+    const { isValid: isFenCurrentlyValid, reason: fenInvalidReason } = isFenPotentiallyValid(fenForThisAIsTurn);
+    if (!isFenCurrentlyValid) {
+      addSystemLogEntry('ERROR', `Game cannot continue: Invalid FEN before ${player}'s turn (${fenInvalidReason || 'Unknown reason'}). Archiving and restarting.`, player);
+      archiveCurrentGame({ winner: 'draw', reason: `Invalid FEN: ${fenInvalidReason || 'Unknown'}` });
+      return; 
+    }
+
+    setIsLoadingAI(true);
+    elapsedAiTurnTimeBeforePauseRef.current = 0;
+    aiTurnStartTimeRef.current = Date.now();
+    setCurrentAiTurnDurationDisplay(formatDuration(0));
+
+    const aiChat = player === PlayerColor.WHITE ? ai1Chat : ai2Chat;
+    const aiName = player === PlayerColor.WHITE ? AI1_NAME : AI2_NAME;
+    const setCoTState = player === PlayerColor.WHITE ? setAi1CoT : setAi2CoT;
+    const incrementSuccess = player === PlayerColor.WHITE ? () => setAi1SuccessTurns(s => s + 1) : () => setAi2SuccessTurns(s => s + 1);
+    const incrementFailure = player === PlayerColor.WHITE ? () => setAi1FailedTurns(f => f + 1) : () => setAi2FailedTurns(f => f + 1);
+    const currentStrategyForAI = player === PlayerColor.WHITE ? ai1Strategy : ai2Strategy;
+
+    if (!aiChat) {
+      const gameOverMsg = `${aiName} is not available. Game over.`;
+      archiveCurrentGame({ winner: player === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `${aiName} unavailable` });
+      setIsLoadingAI(false);
+      incrementFailure();
+      if (aiTurnStartTimeRef.current) {
+        const turnDuration = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+        setLastTurnDurationDisplay(formatDuration(turnDuration));
+        setCurrentAiTurnDurationDisplay(formatDuration(turnDuration));
+      }
+      aiTurnStartTimeRef.current = null;
+      return;
+    }
+
+    let moveProcessedThisAttempt = false;
+    let lastAttemptErrorReason = "";
 
     for (let attempt = 0; attempt <= MAX_CHESS_RETRY_ATTEMPTS; attempt++) {
-        setIsLoadingAI(currentPlayer);
-        const currentFen = boardToFen(boardState, currentPlayer, fenParts.castling, fenParts.enPassant, fenParts.halfMove, fenParts.fullMove);
+      if (!isMountedRef.current || gameStateRef.current.isPaused || isInvokingOvermind || gameIsOverRef.current) { setIsLoadingAI(false); break; }
+
+      let prompt = `Current FEN: ${fenForThisAIsTurn}\nYour turn (${aiName} as ${player === PlayerColor.WHITE ? "White" : "Black"}). Your strategy: ${CHESS_STRATEGIES.find(s => s.id === currentStrategyForAI)?.name || currentStrategyForAI}. Analyze and provide your move in UCI format and your Chain of Thought (CoT).`;
+      if (attempt > 0) {
+        prompt += `\nATTENTION: Your previous attempt failed${lastAttemptErrorReason ? `: "${lastAttemptErrorReason}"` : ""}. Please re-evaluate and provide a valid UCI move. Attempt ${attempt + 1}.`;
+      }
+      lastAttemptErrorReason = "";
+
+      let responseText = "";
+      try {
+        const response = await aiChat.sendMessage({message:prompt});
+        if (!isMountedRef.current || gameStateRef.current.isPaused || isInvokingOvermind || gameIsOverRef.current) { setIsLoadingAI(false); break; }
+        responseText = response.text;
+
+        const cotMatch = responseText.match(/COT:\s*([\s\S]*)/);
+        const cotTextForCheck = cotMatch && cotMatch[1] ? cotMatch[1].trim() : "";
         
-        let prompt: string;
-        if (attempt === 0) {
-            prompt = `Current FEN: ${currentFen}\nYour turn (${currentPlayer === PlayerColor.WHITE ? 'White' : 'Black'}).\nSelected Strategy: ${currentStrategyName}.\nProvide your move in UCI format and your Chain of Thought.\nFormat your response strictly as:\nMOVE: [YourMoveInUCI]\nCOT: [YourReasoning]`;
-        } else {
-            const retryErrorMsg = lastErrorForRetryPrompt || 'Invalid move formatting or logic from previous attempt.';
-            addMessageToHistory(SYSTEM_SENDER_NAME, `${currentAiName} (Attempt ${attempt + 1}/${MAX_CHESS_RETRY_ATTEMPTS + 1}): Retrying move. Previous error: ${retryErrorMsg}`, 'text-[var(--color-info)]', false, false);
-            prompt = `Your previous move attempt was invalid: "${retryErrorMsg}"\nCurrent FEN: ${currentFen}\nYour turn (${currentPlayer === PlayerColor.WHITE ? 'White' : 'Black'}).\nSelected Strategy: ${currentStrategyName}.\nStrictly provide your move in UCI format (e.g., 'e2e4', 'g1f3', 'e7e8q' for promotion) and your Chain of Thought.\nFormat your response strictly as:\nMOVE: [YourMoveInUCI]\nCOT: [YourReasoning]`;
+        const iAmCheckmatedRegex = /checkmate(d)?\. (game over|i have no legal moves|i am checkmated)/i;
+        const opponentCheckmatedMeRegex = /(black|white) played .* checkmate[\s\S]*game over/i;
+        const fenIsInvalidRegex = /fen (is|appears to be) invalid|missing (black|white) king/i;
+        let selfDeclaredCheckmate = false;
+        let aiDeclaredInvalidFen = false;
+
+        if (iAmCheckmatedRegex.test(cotTextForCheck)) {
+            selfDeclaredCheckmate = true;
+        } else if (opponentCheckmatedMeRegex.test(cotTextForCheck)) {
+            if ((player === PlayerColor.WHITE && /black played .* checkmate/i.test(cotTextForCheck)) ||
+                (player === PlayerColor.BLACK && /white played .* checkmate/i.test(cotTextForCheck))) {
+                selfDeclaredCheckmate = true;
+            }
+        }
+        if (fenIsInvalidRegex.test(cotTextForCheck)) {
+            aiDeclaredInvalidFen = true;
         }
 
-        try {
-            const startTime = performance.now();
-            const result = await currentAiChat.sendMessage({ message: prompt });
-            const timeTakenMsForThisAttempt = performance.now() - startTime;
-            timeTakenMs = timeTakenMsForThisAttempt; 
+        if (selfDeclaredCheckmate) {
+            addSystemLogEntry('EVENT', `${aiName} reported being checkmated in CoT: "${cotTextForCheck.substring(0,100)}..."`, player);
+            archiveCurrentGame({ winner: player === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE, reason: `${aiName} reported being checkmated.` });
+            setIsLoadingAI(false);
+            if (aiTurnStartTimeRef.current) {
+                 const turnDuration = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+                 setLastTurnDurationDisplay(formatDuration(turnDuration));
+                 setCurrentAiTurnDurationDisplay(formatDuration(turnDuration));
+            }
+            aiTurnStartTimeRef.current = null;
+            return; 
+        }
+        if (aiDeclaredInvalidFen) {
+            addSystemLogEntry('EVENT', `${aiName} reported FEN invalid in CoT: "${cotTextForCheck.substring(0,100)}..."`, player);
+            archiveCurrentGame({ winner: 'draw', reason: `${aiName} reported FEN invalid.` });
+            setIsLoadingAI(false);
+            if (aiTurnStartTimeRef.current) {
+                 const turnDuration = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+                 setLastTurnDurationDisplay(formatDuration(turnDuration));
+                 setCurrentAiTurnDurationDisplay(formatDuration(turnDuration));
+            }
+            aiTurnStartTimeRef.current = null;
+            return;
+        }
 
-            const responseTextFromAI = result.text;
-            console.log(`AI Response from ${currentAiName} (Attempt ${attempt + 1}):`, responseTextFromAI);
 
-            const primaryMoveRegex = /MOVE:\s*([a-h][1-8][a-h][1-8][qrbn]?)\s*/i;
-            const algebraicCaptureRegex = /MOVE:\s*([a-h][1-8])x([a-h][1-8])([qrbn]?)\s*/i;
+        const moveMatch = responseText.match(/MOVE:\s*([a-h][1-8][a-h][1-8][qrbn]?)/);
+        setCoTState(cotTextForCheck); 
+        addSystemLogEntry('COT', `${aiName} CoT: ${cotTextForCheck}`, player);
 
-            let tempUciMoveString: string | null = null;
-            let moveMatch = responseTextFromAI.match(primaryMoveRegex);
+        if (moveMatch && moveMatch[1]) {
+          const uciMoveString = moveMatch[1];
+          const moveCoords = uciToCoords(uciMoveString);
+          const currentBoardForThisAIMove = fenToBoard(fenForThisAIsTurn).board;
+          const currentFenParts = fenToBoard(fenForThisAIsTurn);
 
-            if (moveMatch) {
-                tempUciMoveString = moveMatch[1].toLowerCase();
+          if (moveCoords) {
+            const validationResult: MoveValidationResult = isMoveValid(currentBoardForThisAIMove, moveCoords, player, currentFenParts.enPassant);
+            if (validationResult.isValid) {
+                addSystemLogEntry('MOVE', `${aiName} plays: ${uciMoveString}`, player);
+                const strategyNameForMove = CHESS_STRATEGIES.find(s => s.id === currentStrategyForAI)?.name || currentStrategyForAI;
+                const nextFenForGame = applyValidatedMoveToBoard(moveCoords, validationResult, player, fenForThisAIsTurn, aiName, cotTextForCheck, strategyNameForMove);
+
+                const { isValid: isFenValidAfterMove, reason: fenInvalidReasonAfterMove } = isFenPotentiallyValid(nextFenForGame);
+                if (!isFenValidAfterMove) {
+                    archiveCurrentGame({ winner: 'draw', reason: `Invalid FEN after move: ${fenInvalidReasonAfterMove || 'Unknown'}` });
+                    setIsLoadingAI(false); return;
+                }
+                const fenPartsAfterMove = fenToBoard(nextFenForGame);
+                if (fenPartsAfterMove.halfMove >= 150) { // Updated to 150 for 75-move rule
+                    archiveCurrentGame({ winner: 'draw', reason: '75-move rule' });
+                    setIsLoadingAI(false); return;
+                }
+
+                setIsLoadingAI(false);
+                incrementSuccess();
+                moveProcessedThisAttempt = true;
+
+                if (aiTurnStartTimeRef.current) {
+                    const turnDuration = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+                    setLastTurnDurationDisplay(formatDuration(turnDuration));
+                    allTurnDurationsMsRef.current.push(turnDuration);
+                    const totalTime = allTurnDurationsMsRef.current.reduce((acc, curr) => acc + curr, 0);
+                    setAverageTurnTimeDisplay(formatDuration(allTurnDurationsMsRef.current.length > 0 ? totalTime / allTurnDurationsMsRef.current.length : 0));
+                    setCurrentAiTurnDurationDisplay(formatDuration(turnDuration));
+                }
+                aiTurnStartTimeRef.current = null;
+
+                if (!gameStateRef.current.isPaused && !gameIsOverRef.current) { 
+                  const nextPlayerToMove = player === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
+                  setTimeout(() => {
+                     if (isMountedRef.current && !gameStateRef.current.isPaused && !gameIsOverRef.current) {
+                        makeAIMoveRef.current(nextPlayerToMove, nextFenForGame);
+                     }
+                  }, 100);
+                }
+                return;
             } else {
-                const algebraicMatch = responseTextFromAI.match(algebraicCaptureRegex);
-                if (algebraicMatch) {
-                    tempUciMoveString = `${algebraicMatch[1]}${algebraicMatch[2]}${algebraicMatch[3] || ''}`.toLowerCase();
-                }
+                lastAttemptErrorReason = validationResult.reason || "Unknown move validation error.";
+                const invalidMoveMsg = `${aiName} proposed an invalid move (${uciMoveString}): ${lastAttemptErrorReason}. Retrying...`;
+                addSystemLogEntry('ERROR', `AI Raw Response (Attempt ${attempt + 1} for ${uciMoveString}): ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`, player);
+                setGameStatus(invalidMoveMsg);
+                addSystemLogEntry('ERROR', invalidMoveMsg, player);
             }
-            
-            const tempCotMatch = responseTextFromAI.match(/COT:\s*(.*)/is);
-            const tempCotText = tempCotMatch ? tempCotMatch[1].trim() : "AI did not provide Chain of Thought or it was malformed.";
-
-            if (!tempUciMoveString) {
-                lastErrorForRetryPrompt = `AI did not provide a move in the expected 'MOVE: [UCI]' format. Full response: ${responseTextFromAI.substring(0, 100)}...`;
-                if (attempt < MAX_CHESS_RETRY_ATTEMPTS) continue; 
-                else break; 
-            }
-            
-            tempUciMoveString = tempUciMoveString.trim().slice(0, 5);
-
-            if (tempUciMoveString.length === 5) {
-                const fifthChar = tempUciMoveString[4];
-                if (!['q', 'r', 'b', 'n'].includes(fifthChar)) {
-                    lastErrorForRetryPrompt = `AI provided a malformed 5-character UCI (promotion) move: ${tempUciMoveString}. Fifth char must be q, r, b, or n.`;
-                    if (attempt < MAX_CHESS_RETRY_ATTEMPTS) continue;
-                    else break;
-                }
-            }
-            
-            const tempParsedMove = uciToCoords(tempUciMoveString);
-            if (!tempParsedMove) {
-                lastErrorForRetryPrompt = `AI provided an invalid UCI move string (could not parse coordinates): ${tempUciMoveString}. Full response: ${responseTextFromAI.substring(0, 100)}...`;
-                if (attempt < MAX_CHESS_RETRY_ATTEMPTS) continue;
-                else break;
-            }
-
-            if (!isMoveValid(boardState, tempParsedMove, currentPlayer)) {
-                lastErrorForRetryPrompt = `AI proposed an invalid move according to game rules: ${tempUciMoveString}.`;
-                if (attempt < MAX_CHESS_RETRY_ATTEMPTS) continue;
-                else break;
-            }
-
-            uciMoveString = tempUciMoveString;
-            cotText = tempCotText;
-            parsedMove = tempParsedMove;
-            moveProcessedSuccessfully = true;
-            if (attempt > 0) {
-                 addMessageToHistory(SYSTEM_SENDER_NAME, `${currentAiName} successfully provided a valid move on attempt ${attempt + 1}: ${uciMoveString}`, 'text-[var(--color-info)]', false, false);
-            }
-            break; 
-
-        } catch (error) { 
-            lastErrorForRetryPrompt = error instanceof Error ? error.message : String(error);
-            console.error(`Error during ${currentAiName}'s turn (Attempt ${attempt + 1} processing):`, error);
-            if (attempt === MAX_CHESS_RETRY_ATTEMPTS) break; 
+          } else {
+             lastAttemptErrorReason = "UCI move string could not be parsed into coordinates.";
+             const invalidUCIMsg = `${aiName} proposed a malformed UCI move (${uciMoveString}). Retrying...`;
+             addSystemLogEntry('ERROR', `AI Raw Response (Attempt ${attempt + 1} for ${uciMoveString}): ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`, player);
+             setGameStatus(invalidUCIMsg);
+             addSystemLogEntry('ERROR', invalidUCIMsg, player);
+          }
+        } else {
+          lastAttemptErrorReason = "Move not provided in expected 'MOVE: [UCI]' format.";
+          const noMoveFormatMsg = `${aiName} did not provide a move in the expected UCI format. Retrying...`;
+          addSystemLogEntry('ERROR', `AI Raw Response (Attempt ${attempt + 1}): ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`, player);
+          setGameStatus(noMoveFormatMsg);
+          addSystemLogEntry('ERROR', noMoveFormatMsg, player);
         }
-    } 
-
-    if (!moveProcessedSuccessfully) {
-        const finalErrorMsg = `AI (${currentAiName}) failed to provide a valid move after ${MAX_CHESS_RETRY_ATTEMPTS + 1} attempts. Last error: ${lastErrorForRetryPrompt || "Unknown error after retries."}`;
-        addMessageToHistory(SYSTEM_SENDER_NAME, finalErrorMsg, 'text-[var(--color-error)]', false, false);
-        handleGameEnd(finalErrorMsg, 'error');
-        setIsLoadingAI(null);
-        return;
+      } catch (error) {
+        if (!isMountedRef.current || gameStateRef.current.isPaused || isInvokingOvermind || gameIsOverRef.current) { setIsLoadingAI(false); break; }
+        console.error(`${aiName} Error:`, error);
+        lastAttemptErrorReason = error instanceof Error ? error.message : "Unknown API/Network error.";
+        const errorMsg = `${aiName} encountered an error: ${lastAttemptErrorReason}. Retrying...`;
+        addSystemLogEntry('ERROR', `AI Raw Response (Attempt ${attempt + 1}): ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`, player);
+        setGameStatus(errorMsg);
+        addSystemLogEntry('ERROR', errorMsg, player);
+      }
     }
-    
-    if (!uciMoveString || !parsedMove) { 
-        const safeguardError = `Internal error: Move processed flag true, but UCI/parsed move is null. Last AI error: ${lastErrorForRetryPrompt}`;
-        addMessageToHistory(SYSTEM_SENDER_NAME, safeguardError, 'text-[var(--color-error)]', false, false);
-        handleGameEnd(safeguardError, 'error');
-        setIsLoadingAI(null);
-        return;
-    }
-    
-    setTotalMoveTimeMs(prev => prev + timeTakenMs);
-    setCompletedMovesForAvg(prev => prev + 1);
 
-    if (currentPlayer === PlayerColor.WHITE) setCotAI1(cotText);
-    else setCotAI2(cotText);
-    
-    const pieceMakingMove = boardState[parsedMove.from.row][parsedMove.from.col];
-    const pieceCaptured = boardState[parsedMove.to.row][parsedMove.to.col]; 
-    
-    const newBoard = applyMoveToBoard(boardState, parsedMove);
-    setBoardState(newBoard);
-    setLastMove(parsedMove);
-    
-    const moveLogPlayerName = currentPlayer === PlayerColor.WHITE ? AI1_NAME : AI2_NAME;
-    addMessageToHistory(moveLogPlayerName, `${moveLogPlayerName} (${currentPlayer === PlayerColor.WHITE ? "W" : "B"}) moves: ${uciMoveString}`, 
-      currentPlayer === PlayerColor.WHITE ? 'text-[var(--color-ai1-text)]' : 'text-[var(--color-ai2-text)]', false, false);
-    
-    setMoveHistoryUI(prev => [...prev, { 
-      moveNumber: currentMoveNumberRef.current, 
-      player: currentPlayer, 
-      uci: uciMoveString! 
-    }]);
-    setCurrentGameMoves(prev => [...prev, {
-      player: currentPlayer, uci: uciMoveString!, cot: cotText, strategy: currentStrategyName, moveTimestamp: Date.now(), timeTakenMs
-    }]);
-    
-    const newHalfMove = (pieceMakingMove?.symbol === PieceSymbol.PAWN || pieceCaptured !== null)
-                         ? 0 : fenParts.halfMove + 1;
-    const newFullMove = currentPlayer === PlayerColor.BLACK ? fenParts.fullMove + 1 : fenParts.fullMove;
-    currentMoveNumberRef.current = newFullMove;
-
-    let newCastlingRights = fenParts.castling;
-    if (pieceMakingMove?.symbol === PieceSymbol.KING) {
-        if (currentPlayer === PlayerColor.WHITE) newCastlingRights = newCastlingRights.replace('K', '').replace('Q', '');
-        else newCastlingRights = newCastlingRights.replace('k', '').replace('q', '');
+    if (!moveProcessedThisAttempt && !isInvokingOvermind && !gameStateRef.current.isPaused && !gameIsOverRef.current) {
+        invokeOvermindDataMaster(player, fenForThisAIsTurn, lastAttemptErrorReason || "AI failed all direct attempts.", aiName, currentStrategyForAI);
+    } else if (!moveProcessedThisAttempt) {
+        setIsLoadingAI(false); 
     }
-    if (parsedMove.from.row === 7 && parsedMove.from.col === 0) newCastlingRights = newCastlingRights.replace('Q', '');
-    if (parsedMove.from.row === 7 && parsedMove.from.col === 7) newCastlingRights = newCastlingRights.replace('K', '');
-    if (parsedMove.from.row === 0 && parsedMove.from.col === 0) newCastlingRights = newCastlingRights.replace('q', '');
-    if (parsedMove.from.row === 0 && parsedMove.from.col === 7) newCastlingRights = newCastlingRights.replace('k', '');
-    if (pieceCaptured?.symbol === PieceSymbol.ROOK) {
-        if (parsedMove.to.row === 7 && parsedMove.to.col === 0 && pieceCaptured.color === PlayerColor.WHITE) newCastlingRights = newCastlingRights.replace('Q', '');
-        if (parsedMove.to.row === 7 && parsedMove.to.col === 7 && pieceCaptured.color === PlayerColor.WHITE) newCastlingRights = newCastlingRights.replace('K', '');
-        if (parsedMove.to.row === 0 && parsedMove.to.col === 0 && pieceCaptured.color === PlayerColor.BLACK) newCastlingRights = newCastlingRights.replace('q', '');
-        if (parsedMove.to.row === 0 && parsedMove.to.col === 7 && pieceCaptured.color === PlayerColor.BLACK) newCastlingRights = newCastlingRights.replace('k', '');
-    }
-    if (newCastlingRights === "") newCastlingRights = "-";
-    
-    setFenParts(prev => ({ ...prev, castling: newCastlingRights, halfMove: newHalfMove, fullMove: newFullMove }));
 
-    const nextPlayer = currentPlayer === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
-    
-    let gameEndReason = "";
-    let gameWinner: PlayerColor | 'draw' | 'error' | undefined = undefined;
+  }, [
+    ai1Chat, ai2Chat, apiKeyMissing, ai1Strategy, ai2Strategy, archiveCurrentGame, addSystemLogEntry,
+    isOverallAiReady, isInvokingOvermind, invokeOvermindDataMaster, applyValidatedMoveToBoard
+  ]);
 
-    const aiResponseTextForCheck = cotText.toLowerCase() + " " + (uciMoveString || "").toLowerCase(); 
-    if (aiResponseTextForCheck.includes("checkmate")) {
-      gameEndReason = `${currentAiName} announces Checkmate! ${currentAiName} wins!`;
-      gameWinner = currentPlayer;
-    } else if (aiResponseTextForCheck.includes("resign")) {
-      gameEndReason = `${currentAiName} resigns. ${nextPlayer === PlayerColor.WHITE ? AI1_NAME : AI2_NAME} wins!`;
-      gameWinner = nextPlayer;
-    } else if (newHalfMove >= 100) { 
-      gameEndReason = "Draw by 50-move rule.";
-      gameWinner = 'draw';
-    }
-    
-    if (gameEndReason) {
-      handleGameEnd(gameEndReason, gameWinner);
-      addMessageToHistory(SYSTEM_SENDER_NAME, `Game Over: ${gameEndReason}`, 'text-[var(--color-info)]', false, false);
+  const resetGameInternal = useCallback((isStartingNew: boolean = false) => {
+    if (!isMountedRef.current) return;
+    const initialFenData = fenToBoard(INITIAL_BOARD_FEN);
+    setCurrentFen(INITIAL_BOARD_FEN);
+    setBoardState(initialFenData.board);
+    setParsedFenData(initialFenData);
+    setCurrentPlayer(PlayerColor.WHITE);
+    setAi1CoT("");
+    setAi2CoT("");
+    setAi1CoTHistory([]);
+    setAi2CoTHistory([]);
+    setAi1SuccessTurns(0);
+    setAi1FailedTurns(0);
+    setAi2SuccessTurns(0);
+    setAi2FailedTurns(0);
+    setMoveHistory([]);
+    setCapturedPieces({ white: [], black: [] });
+    lastMoveUciCoords.current = null;
+    gameIsOverRef.current = false;
+    setIsLoadingAI(false);
+    setIsGamePaused(false);
+    setIsInvokingOvermind(false);
+
+    if (displayUpdateIntervalRef.current) clearInterval(displayUpdateIntervalRef.current);
+    displayUpdateIntervalRef.current = null;
+    aiTurnStartTimeRef.current = null;
+    elapsedAiTurnTimeBeforePauseRef.current = 0;
+    gameStartTimestampRef.current = null;
+    elapsedGameTimeBeforePauseRef.current = 0;
+    allTurnDurationsMsRef.current = [];
+    setCurrentAiTurnDurationDisplay("--:--.-");
+    setLastTurnDurationDisplay("--:--.-");
+    setAverageTurnTimeDisplay("--:--.-");
+    setTotalGameTimeDisplay("--:--.-");
+
+
+    if (isStartingNew) {
+      setGameStatus(CHESS_SIM_START_MESSAGE);
+      setIsGameStarted(true);
+      currentGameStartTimeRef.current = new Date().toISOString();
+      addSystemLogEntry('EVENT', `New game started. ${AI1_NAME} (W) strategy: ${CHESS_STRATEGIES.find(s => s.id === ai1Strategy)?.name || ai1Strategy}. ${AI2_NAME} (B) strategy: ${CHESS_STRATEGIES.find(s => s.id === ai2Strategy)?.name || ai2Strategy}.`);
+
+      gameStartTimestampRef.current = Date.now();
+      displayUpdateIntervalRef.current = setInterval(() => {
+        if (!isMountedRef.current) return;
+        if (gameStateRef.current.isPaused) return;
+        if (gameStartTimestampRef.current) {
+            const currentTotalElapsed = elapsedGameTimeBeforePauseRef.current + (Date.now() - gameStartTimestampRef.current);
+            setTotalGameTimeDisplay(formatDuration(currentTotalElapsed));
+        }
+        if (aiTurnStartTimeRef.current) {
+            const currentTurnElapsed = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+            setCurrentAiTurnDurationDisplay(formatDuration(currentTurnElapsed));
+        }
+      }, 100);
+
     } else {
-      setCurrentPlayer(nextPlayer);
-      setGameStatus(`${nextPlayer === PlayerColor.WHITE ? 'White' : 'Black'} to move.`);
+      setGameStatus("Select strategies and click 'New Game' to begin.");
+      setIsGameStarted(false);
+      currentGameStartTimeRef.current = null;
+      addSystemLogEntry('EVENT', "Game reset. Select strategies and click 'New Game'.");
     }
+  }, [ai1Strategy, ai2Strategy, addSystemLogEntry]);
 
-    setIsLoadingAI(null);
-  }, [ai1Chat, ai2Chat, boardState, currentPlayer, fenParts, addMessageToHistory, apiKeyMissing, isGameStarted, isOverallAiReady, ai1Strategy, ai2Strategy, handleGameEnd]);
+  const makeAIMoveRef = useRef(makeAIMoveInternal);
+  useEffect(() => { makeAIMoveRef.current = makeAIMoveInternal; }, [makeAIMoveInternal]);
+
+  const resetGameRef = useRef(resetGameInternal);
+  useEffect(() => { resetGameRef.current = resetGameInternal; }, [resetGameInternal]);
 
   useEffect(() => {
-    if (!isLoadingAI && !gameIsOverRef.current && !apiKeyMissing && (ai1Chat && ai2Chat) && isGameStarted && isOverallAiReady) {
-      const timeoutId = setTimeout(() => makeAIMove(), 1500); 
-      return () => clearTimeout(timeoutId);
+    const isRestoringFromProps = !!initialGameStatusProp;
+
+    if (isRestoringFromProps) {
+        if (displayUpdateIntervalRef.current) clearInterval(displayUpdateIntervalRef.current);
+        aiTurnStartTimeRef.current = null;
+        elapsedAiTurnTimeBeforePauseRef.current = 0;
+        allTurnDurationsMsRef.current = [];
+        setCurrentAiTurnDurationDisplay("--:--.-");
+        setLastTurnDurationDisplay("--:--.-");
+        setAverageTurnTimeDisplay("--:--.-");
+
+        elapsedGameTimeBeforePauseRef.current = 0;
+        gameStartTimestampRef.current = Date.now();
+        setTotalGameTimeDisplay(formatDuration(0));
+
+        displayUpdateIntervalRef.current = setInterval(() => {
+            if (!isMountedRef.current || gameStateRef.current.isPaused) return;
+            if (gameStartTimestampRef.current) {
+                const currentTotalElapsed = elapsedGameTimeBeforePauseRef.current + (Date.now() - gameStartTimestampRef.current);
+                setTotalGameTimeDisplay(formatDuration(currentTotalElapsed));
+            }
+            if (aiTurnStartTimeRef.current) {
+                const currentTurnElapsed = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+                setCurrentAiTurnDurationDisplay(formatDuration(currentTurnElapsed));
+            }
+        }, 100);
+
+
+        setCurrentFen(initialFenProp || INITIAL_BOARD_FEN);
+        const fenData = fenToBoard(initialFenProp || INITIAL_BOARD_FEN);
+        setBoardState(fenData.board);
+        setParsedFenData(fenData);
+        setCurrentPlayer(initialPlayerProp || PlayerColor.WHITE);
+        setAi1CoT(initialCoTAI1Prop || "");
+        setAi2CoT(initialCoTAI2Prop || "");
+        setGameStatus(initialGameStatusProp!);
+        setIsGameStarted(true);
+        setMoveHistory([]);
+        setSystemLog([{id: `sys-restore-${Date.now()}`, timestamp: new Date().toISOString(), message: `Game restored from backup.`, type: 'EVENT'}]);
+        setCapturedPieces({ white: [], black: [] });
+        lastMoveUciCoords.current = null;
+        const gameWasOverInBackup = initialGameStatusProp?.toLowerCase().includes("winner") || initialGameStatusProp?.toLowerCase().includes("draw") || initialGameStatusProp?.toLowerCase().includes("game over");
+        gameIsOverRef.current = gameWasOverInBackup;
+        setIsLoadingAI(false);
+        setIsGamePaused(false);
+        setIsInvokingOvermind(false);
+        currentGameStartTimeRef.current = new Date().toISOString();
+
+        if (isOverallAiReady && !isGamePaused && !gameIsOverRef.current) {
+            const playerToMove = initialPlayerProp || PlayerColor.WHITE;
+            const fenToUse = initialFenProp || INITIAL_BOARD_FEN;
+            setTimeout(() => {
+                if (isMountedRef.current && !gameStateRef.current.isPaused && !gameIsOverRef.current) {
+                    makeAIMoveRef.current(playerToMove, fenToUse);
+                }
+            }, 250);
+        }
+        initialSetupDoneRef.current = true;
+    } else {
+        if (!initialSetupDoneRef.current || chessResetToken !== (previousChessResetTokenRef.current || chessResetToken) ) {
+             resetGameRef.current(false);
+             initialSetupDoneRef.current = true;
+        }
     }
-  }, [currentPlayer, isLoadingAI, makeAIMove, apiKeyMissing, ai1Chat, ai2Chat, isGameStarted, isOverallAiReady]);
+    previousChessResetTokenRef.current = chessResetToken;
+  }, [
+    chessResetToken,
+    initialFenProp,
+    initialPlayerProp,
+    initialCoTAI1Prop,
+    initialCoTAI2Prop,
+    initialGameStatusProp,
+    isOverallAiReady
+  ]);
+  const previousChessResetTokenRef = useRef(chessResetToken);
 
-  const ai1PersonaColor = 'text-[var(--color-ai1-text)]';
-  const ai2PersonaColor = 'text-[var(--color-ai2-text)]';
+  const handlePauseToggle = () => {
+    const newPauseState = !isGamePaused;
+    setIsGamePaused(newPauseState);
+    addSystemLogEntry('EVENT', `Game ${newPauseState ? 'paused' : 'resumed'}.`);
 
-  const renderCapturedPieces = (captured: CapturedPieces, perspective: PlayerColor) => {
-    const pieceOrder: PieceSymbol[] = [PieceSymbol.QUEEN, PieceSymbol.ROOK, PieceSymbol.BISHOP, PieceSymbol.KNIGHT, PieceSymbol.PAWN];
-    let displayPieces: React.ReactNode[] = [];
-    pieceOrder.forEach(symbol => {
-      for (let i = 0; i < captured[symbol]; i++) {
-        const pieceColor = perspective === PlayerColor.WHITE ? PlayerColor.BLACK : PlayerColor.WHITE;
-        displayPieces.push(
-          <span key={`${symbol}-${i}-${pieceColor}`} className="text-lg mx-0.5" title={`${symbol.toUpperCase()} captured`}>
-            {getPieceUnicode(symbol, pieceColor)}
-          </span>
-        );
-      }
-    });
-    if (displayPieces.length === 0) return <span className="text-xs italic">None</span>;
-    return displayPieces;
-  };
-  
-  const totalWhiteCaptured = Object.values(capturedByBlack).reduce((sum, count) => sum + count, 0);
-  const totalBlackCaptured = Object.values(capturedByWhite).reduce((sum, count) => sum + count, 0);
-  const averageMoveTime = completedMovesForAvg > 0 ? (totalMoveTimeMs / completedMovesForAvg / 1000).toFixed(1) : "N/A";
+    if (newPauseState) {
+        if (aiTurnStartTimeRef.current) {
+            elapsedAiTurnTimeBeforePauseRef.current += (Date.now() - aiTurnStartTimeRef.current);
+        }
+        aiTurnStartTimeRef.current = null;
 
-  const availableModes = Object.values(AppMode).filter(mode => mode !== AppMode.UNIVERSE_SIM_EXE);
+        if (gameStartTimestampRef.current) {
+            elapsedGameTimeBeforePauseRef.current += (Date.now() - gameStartTimestampRef.current);
+        }
+        gameStartTimestampRef.current = null;
 
-  const downloadJsonFile = (data: any, filename: string) => {
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
-    const link = document.createElement("a");
-    link.href = jsonString;
-    link.download = filename;
-    link.click();
-    link.remove();
-  };
+        if (displayUpdateIntervalRef.current) clearInterval(displayUpdateIntervalRef.current);
+        displayUpdateIntervalRef.current = null;
 
-  const handleExportLastGame = () => {
-    if (gameHistoryArchive.length > 0) {
-      const lastGame = gameHistoryArchive[gameHistoryArchive.length - 1];
-      downloadJsonFile(lastGame, `chess-game-${lastGame.id}.json`);
+    } else {
+        if (isGameStarted && !gameIsOverRef.current) {
+             if (isLoadingAI) { 
+                aiTurnStartTimeRef.current = Date.now();
+            }
+            gameStartTimestampRef.current = Date.now(); 
+
+            displayUpdateIntervalRef.current = setInterval(() => {
+                if (!isMountedRef.current || gameStateRef.current.isPaused) return;
+                if (gameStartTimestampRef.current) {
+                    const currentTotalElapsed = elapsedGameTimeBeforePauseRef.current + (Date.now() - gameStartTimestampRef.current);
+                    setTotalGameTimeDisplay(formatDuration(currentTotalElapsed));
+                }
+                if (aiTurnStartTimeRef.current) {
+                    const currentTurnElapsed = elapsedAiTurnTimeBeforePauseRef.current + (Date.now() - aiTurnStartTimeRef.current);
+                    setCurrentAiTurnDurationDisplay(formatDuration(currentTurnElapsed));
+                }
+            }, 100);
+        }
+
+        if (!gameIsOverRef.current && isGameStarted && isOverallAiReady && !isInvokingOvermind) {
+            if (!isLoadingAI) { 
+                setTimeout(() => {
+                  if (isMountedRef.current && !gameStateRef.current.isPaused && !gameIsOverRef.current) {
+                    makeAIMoveRef.current(gameStateRef.current.currentPlayer, gameStateRef.current.currentFen);
+                  }
+                }, 100);
+            } 
+        }
     }
   };
-  const handleExportGameById = (gameId: string) => {
-    const gameToExport = gameHistoryArchive.find(g => g.id === gameId);
-    if (gameToExport) {
-        downloadJsonFile(gameToExport, `chess-game-${gameToExport.id}.json`);
-    }
+
+  const handleExportGameHistoryArchive = () => {
+    if (gameHistoryArchive.length === 0) return;
+    const dataStr = JSON.stringify(gameHistoryArchive, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const exportFileDefaultName = `chess_game_archive_${new Date().toISOString().split('T')[0]}.json`;
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+    linkElement.remove();
+    addSystemLogEntry('EVENT', 'Game history archive exported.');
   };
-  const handleExportAllGames = () => {
-    if (gameHistoryArchive.length > 0) {
-        downloadJsonFile(gameHistoryArchive, `chess-all-games-${Date.now()}.json`);
-    }
-  };
 
-  const totalGames = whiteWins + blackWins + draws;
-  const whiteWinPercentage = totalGames > 0 ? ((whiteWins / totalGames) * 100).toFixed(1) : "0.0";
-  const blackWinPercentage = totalGames > 0 ? ((blackWins / totalGames) * 100).toFixed(1) : "0.0";
-  const drawPercentage = totalGames > 0 ? ((draws / totalGames) * 100).toFixed(1) : "0.0";
+  const SidebarPanel: React.FC<{ title: string, children: React.ReactNode, className?: string }> = ({ title, children, className }) => (
+    <div className={`bg-[var(--color-bg-terminal)] border-2 border-[var(--color-border-base)] rounded p-2 shadow-sm ${className}`}>
+      <h4 className="text-xs font-semibold text-[var(--color-text-heading)] border-b border-[var(--color-border-strong)] pb-1 mb-1.5">{title}</h4>
+      {children}
+    </div>
+  );
 
+  const whiteWins = sessionGameOutcomes.filter(g => g.winner === PlayerColor.WHITE).length;
+  const blackWins = sessionGameOutcomes.filter(g => g.winner === PlayerColor.BLACK).length;
+  const draws = sessionGameOutcomes.filter(g => g.winner === 'draw').length;
+  const totalSessionGames = sessionGameOutcomes.length;
 
-  if (!isOverallAiReady) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-lg text-[var(--color-error)] p-4 text-center w-full">
-        <p>Initializing AI for Chess Mode... Please wait.</p>
-        {appInitializationError && !apiKeyMissing && (
-          <div className="mt-4 text-sm text-[var(--color-error)] bg-[var(--color-bg-panel)] p-3 rounded border border-[var(--color-error)] max-w-md">
-            <p className="font-semibold">An error occurred during App AI initialization:</p>
-            <pre className="whitespace-pre-wrap mt-2">{appInitializationError}</pre>
-          </div>
-        )}
-         {apiKeyMissing && (
-           <div className="mt-4 text-sm text-[var(--color-error)] bg-[var(--color-bg-panel)] p-3 rounded border border-[var(--color-error)] max-w-md">
-            <p className="font-semibold">API Key Missing!</p>
-            <p>The API_KEY is not configured. Chess AIs cannot be initialized.</p>
-          </div>
-        )}
-        <p className="mt-2 text-sm">If this message persists, AI initialization may have failed. Check console for errors. Ensure API key is valid and network connection is stable.</p>
-      </div>
-    );
-  }
+  const strategySelectDisabled = isLoadingAI || isInvokingOvermind || (isGameStarted && !isGamePaused && !gameIsOverRef.current);
 
   return (
-    <div className="flex flex-col h-full w-full bg-[var(--color-bg-page)] text-[var(--color-text-base)] p-2 md:p-4 overflow-hidden">
+    <div className="flex flex-col h-full w-full bg-[var(--color-bg-page)] text-[var(--color-text-base)] p-1 md:p-2 overflow-hidden">
       <div ref={dataDivRef} id="chess-mode-container-data" style={{ display: 'none' }}></div>
-      
-      <header className="flex flex-col sm:flex-row justify-between items-center mb-3 p-2 bg-[var(--color-bg-panel)] rounded-md shadow-lg">
-        <h1 className="text-xl md:text-2xl font-bold text-[var(--color-text-heading)]">AI vs AI Chess Simulation</h1>
-        <div className="flex items-center space-x-2 mt-2 sm:mt-0">
-            <button
-                onClick={handleManualNewGame}
-                className="px-3 py-1.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs font-semibold"
-                disabled={!isGameStarted && !gameIsOverRef.current}
-            >
-             New Game
-            </button>
-            <div className="control-group space-y-1 sm:space-y-0 sm:flex sm:items-center sm:space-x-2">
-            <label htmlFor="chessAppModeSelect" className="text-sm font-medium text-[var(--color-text-heading)] sr-only sm:not-sr-only">Mode:</label>
+      <header className="w-full flex-shrink-0 p-2 mb-1 bg-[var(--color-bg-panel)] rounded-md shadow-md border-2 border-[var(--color-border-strong)] flex flex-col sm:flex-row justify-between items-center">
+        <h1 className="text-md md:text-lg font-bold text-[var(--color-text-heading)] mb-2 sm:mb-0">AI vs AI Chess Simulation</h1>
+        <div className="flex items-center space-x-1 sm:space-x-2">
+          <button onClick={() => handleNewGameRef.current()} disabled={isLoadingAI || isInvokingOvermind || !isOverallAiReady}
+            className="px-2 py-1 bg-[var(--color-bg-button-primary)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-bg-button-primary-hover)] focus-ring-primary text-xs font-semibold disabled:opacity-50">
+            New Game
+          </button>
+          <div className="control-group flex items-center">
+            <label htmlFor="chessAppModeSelectHeader" className="sr-only">Mode:</label>
             <select
-                id="chessAppModeSelect"
+                id="chessAppModeSelectHeader"
                 value={currentAppMode}
                 onChange={(e) => onModeChange(e.target.value as AppMode)}
-                className="w-full sm:w-auto bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-2 rounded-sm focus-ring-accent text-xs"
+                className="bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] text-[var(--color-text-base)] p-1 rounded-sm text-[10px] focus-ring-accent"
+                title="Change simulation mode"
             >
-                {Object.values(AppMode).map(mode => (
-                  <option key={mode} value={mode}>{mode}</option>
-                ))}
+                {Object.values(AppMode).map(mode => ( <option key={mode} value={mode}>{mode}</option>))}
             </select>
-            </div>
-             <button 
-                onClick={onOpenInfoModal} 
-                title="About Chess Mode"
-                className="p-1.5 rounded-full hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
-                aria-label="Show information about Chess mode"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-[var(--color-accent-300)]">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
-                </svg>
-            </button>
+          </div>
+          <button onClick={handlePauseToggle} disabled={!isGameStarted || gameIsOverRef.current}
+            className="px-2 py-1 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs disabled:opacity-50">
+            {isGamePaused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            onClick={onOpenInfoModal}
+            title="About Chess Simulation Mode"
+            className="p-0.5 rounded-full hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
+            aria-label="Show information about Chess mode"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-[var(--color-accent-300)]">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+            </svg>
+          </button>
         </div>
       </header>
 
-      <div className="flex flex-col md:flex-row gap-3 flex-grow min-h-0">
-        {/* Left Column: Board and CoT */}
-        <div className="flex-grow flex flex-col items-center gap-3 md:w-2/3">
-          <div className="text-center p-2 bg-[var(--color-bg-panel)] rounded-md shadow-lg w-full max-w-lg">
-            <p className={`text-lg font-semibold ${gameStatus.includes("White to move") ? ai1PersonaColor : gameStatus.includes("Black to move") ? ai2PersonaColor : 'text-[var(--color-text-heading)]'}`}>
-              {gameStatus}
-            </p>
-            {isLoadingAI && (
-              <p className="text-sm text-[var(--color-system-message)] animate-pulse">
-                {isLoadingAI === PlayerColor.WHITE ? AI1_NAME : AI2_NAME} is thinking...
-              </p>
-            )}
-            {!isGameStarted && isOverallAiReady && !autoRestartCountdown &&(
-              <button
-                onClick={handleStartGame}
-                className="mt-2 px-4 py-2 bg-[var(--color-primary-500)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-primary-600)] focus-ring-primary text-sm font-semibold"
-              >
-                Start First Game
-              </button>
-            )}
+      <div className="flex flex-row flex-grow min-h-0 p-1 gap-1">
+        <main className="w-3/4 flex flex-col space-y-1 h-full">
+          <div className="text-center py-1 text-[var(--color-text-muted)] text-sm border-b border-[var(--color-border-strong)] flex-shrink-0">
+            {isInvokingOvermind ? `${gameStatus} (Overmind Analyzing...)` : gameStatus}
+            {isLoadingAI && !isGamePaused && !isInvokingOvermind && <span className="animate-pulse ml-2">AI Thinking...</span>}
           </div>
-          <ChessBoardDisplay board={boardState} lastMove={lastMove} playerPerspective={PlayerColor.WHITE} />
-          <div className="w-full max-w-xl grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-            <CoTDisplay title={`${AI1_NAME} (White)`} cot={cotAI1} isLoading={isLoadingAI === PlayerColor.WHITE} playerNameColor={ai1PersonaColor} />
-            <CoTDisplay title={`${AI2_NAME} (Black)`} cot={cotAI2} isLoading={isLoadingAI === PlayerColor.BLACK} playerNameColor={ai2PersonaColor} />
+          <div className="flex-grow flex items-center justify-center p-1 min-h-0" ref={chessBoardDisplayRef}>
+            <ChessBoardDisplay board={boardState} lastMove={lastMoveUciCoords.current} />
           </div>
-        </div>
+          <div className="grid grid-cols-2 gap-1 h-44 flex-shrink-0">
+            <CoTDisplay
+              title={`${AI1_NAME} (White)`}
+              currentCot={ai1CoT}
+              history={ai1CoTHistory}
+              isLoading={isLoadingAI && currentPlayer === PlayerColor.WHITE && !isInvokingOvermind}
+              playerNameColor="text-[var(--color-ai1-text)]"
+              successTurns={ai1SuccessTurns}
+              failedTurns={ai1FailedTurns}
+            />
+            <CoTDisplay
+              title={`${AI2_NAME} (Black)`}
+              currentCot={ai2CoT}
+              history={ai2CoTHistory}
+              isLoading={isLoadingAI && currentPlayer === PlayerColor.BLACK && !isInvokingOvermind}
+              playerNameColor="text-[var(--color-ai2-text)]"
+              successTurns={ai2SuccessTurns}
+              failedTurns={ai2FailedTurns}
+            />
+          </div>
+        </main>
 
-        {/* Right Column: Player Stats, Move History, Game Stats, Archive */}
-        <div className="w-full md:w-1/3 lg:max-w-sm flex flex-col gap-3 overflow-y-auto pr-1">
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-[var(--color-bg-terminal)] border border-[var(--color-border-base)] p-2 rounded shadow">
-              <h4 className={`font-semibold ${ai1PersonaColor}`}>{AI1_NAME} (White)</h4>
-              <div className="text-xs mb-1">
-                <label htmlFor="ai1StrategySelect" className="mr-1">Strategy:</label>
-                <select 
-                  id="ai1StrategySelect"
-                  value={ai1Strategy} 
-                  onChange={(e) => setAi1Strategy(e.target.value)}
-                  className="ml-1 w-auto max-w-[150px] bg-[var(--color-bg-input)] border border-[var(--color-border-input)] text-[var(--color-text-muted)] p-0.5 rounded-sm text-xs focus-ring-accent"
-                  disabled={isGameStarted && !gameIsOverRef.current && isLoadingAI === PlayerColor.WHITE}
-                  aria-label={`${AI1_NAME} Strategy`}
-                >
+        <aside className="w-1/4 flex flex-col space-y-1 bg-[var(--color-bg-panel)] border-l-2 border-[var(--color-border-base)] p-1 overflow-y-auto log-display custom-scrollbar">
+          <SidebarPanel title="AI Strategy & Captured">
+             <div className="grid grid-cols-2 gap-x-2 text-xs">
+              <div>
+                <label htmlFor="ai1Strategy" className="block text-[var(--color-ai1-text)] text-[10px] font-semibold">{AI1_NAME} (White):</label>
+                <span className="text-[var(--color-text-muted)] text-[10px] block mb-0.5">Strategy:</span>
+                <select id="ai1Strategy" value={ai1Strategy}
+                  onChange={e => {
+                    setAi1Strategy(e.target.value);
+                    if(isGameStarted && !isGamePaused && !gameIsOverRef.current) addSystemLogEntry('STRATEGY', `${AI1_NAME} strategy will change to: ${CHESS_STRATEGIES.find(s => s.id === e.target.value)?.name || e.target.value} on next opportunity.`);
+                  }}
+                  disabled={strategySelectDisabled}
+                  className="w-full text-[10px] p-0.5 bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] rounded-sm focus-ring-accent disabled:opacity-70 disabled:cursor-not-allowed">
                   {CHESS_STRATEGIES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
+                <div className="mt-1 text-[var(--color-text-muted)] text-[10px]">Pieces Captured:
+                    <div className="flex flex-wrap gap-0.5 mt-0.5" aria-label="Pieces captured by White">
+                      {capturedPieces.white.length === 0 && <span className="italic">None</span>}
+                      {capturedPieces.white.map((p, i) =>
+                        <span key={`cap-w-${i}`} className="text-sm" style={{ color: p.color === PlayerColor.BLACK ? (THEMES[activeTheme]?.ai2TextColor || '#333') : (THEMES[activeTheme]?.ai1TextColor || '#FFF'), filter: p.color === PlayerColor.WHITE ? 'drop-shadow(0 0 1px #000)' : 'drop-shadow(0 0 1px #FFF)'}}>
+                           {getPieceUnicode(p.symbol, p.color)}
+                        </span>
+                      )}
+                    </div>
+                </div>
               </div>
-              <p className="text-xs text-[var(--color-text-muted)]">Pieces Captured: {totalWhiteCaptured}</p>
-              <div className="flex flex-wrap items-center h-8 min-h-[2rem] text-sm">{renderCapturedPieces(capturedByBlack, PlayerColor.WHITE)}</div>
-            </div>
-            <div className="bg-[var(--color-bg-terminal)] border border-[var(--color-border-base)] p-2 rounded shadow">
-              <h4 className={`font-semibold ${ai2PersonaColor}`}>{AI2_NAME} (Black)</h4>
-               <div className="text-xs mb-1">
-                <label htmlFor="ai2StrategySelect" className="mr-1">Strategy:</label>
-                <select 
-                  id="ai2StrategySelect"
-                  value={ai2Strategy} 
-                  onChange={(e) => setAi2Strategy(e.target.value)}
-                  className="ml-1 w-auto max-w-[150px] bg-[var(--color-bg-input)] border border-[var(--color-border-input)] text-[var(--color-text-muted)] p-0.5 rounded-sm text-xs focus-ring-accent"
-                  disabled={isGameStarted && !gameIsOverRef.current && isLoadingAI === PlayerColor.BLACK}
-                  aria-label={`${AI2_NAME} Strategy`}
-                >
+              <div>
+                <label htmlFor="ai2Strategy" className="block text-[var(--color-ai2-text)] text-[10px] font-semibold">{AI2_NAME} (Black):</label>
+                 <span className="text-[var(--color-text-muted)] text-[10px] block mb-0.5">Strategy:</span>
+                <select id="ai2Strategy" value={ai2Strategy}
+                  onChange={e => {
+                    setAi2Strategy(e.target.value);
+                     if(isGameStarted && !isGamePaused && !gameIsOverRef.current) addSystemLogEntry('STRATEGY', `${AI2_NAME} strategy will change to: ${CHESS_STRATEGIES.find(s => s.id === e.target.value)?.name || e.target.value} on next opportunity.`);
+                  }}
+                  disabled={strategySelectDisabled}
+                  className="w-full text-[10px] p-0.5 bg-[var(--color-bg-dropdown)] border border-[var(--color-border-input)] rounded-sm focus-ring-accent disabled:opacity-70 disabled:cursor-not-allowed">
                   {CHESS_STRATEGIES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
+                 <div className="mt-1 text-[var(--color-text-muted)] text-[10px]">Pieces Captured:
+                    <div className="flex flex-wrap gap-0.5 mt-0.5" aria-label="Pieces captured by Black">
+                        {capturedPieces.black.length === 0 && <span className="italic">None</span>}
+                        {capturedPieces.black.map((p, i) =>
+                          <span key={`cap-b-${i}`} className="text-sm" style={{ color: p.color === PlayerColor.BLACK ? (THEMES[activeTheme]?.ai2TextColor || '#333') : (THEMES[activeTheme]?.ai1TextColor || '#FFF'), filter: p.color === PlayerColor.WHITE ? 'drop-shadow(0 0 1px #000)' : 'drop-shadow(0 0 1px #FFF)'}}>
+                            {getPieceUnicode(p.symbol, p.color)}
+                          </span>
+                        )}
+                    </div>
+                </div>
               </div>
-              <p className="text-xs text-[var(--color-text-muted)]">Pieces Captured: {totalBlackCaptured}</p>
-              <div className="flex flex-wrap items-center h-8 min-h-[2rem] text-sm">{renderCapturedPieces(capturedByWhite, PlayerColor.BLACK)}</div>
             </div>
-          </div>
+          </SidebarPanel>
 
-          <div className="bg-[var(--color-bg-terminal)] border border-[var(--color-border-base)] p-2 rounded shadow flex flex-col min-h-[150px] max-h-56"> {/* Removed flex-1, set max-h */}
-            <h4 className="text-sm font-semibold text-[var(--color-text-heading)] border-b border-[var(--color-border-strong)] pb-1 mb-1">Move History (Current Game)</h4>
-            <ul className="text-xs text-[var(--color-text-muted)] overflow-y-auto log-display flex-grow pr-1">
-              {moveHistoryUI.length === 0 && !isGameStarted && <li className="italic">Game has not started.</li>}
-              {moveHistoryUI.length === 0 && isGameStarted && <li className="italic">No moves yet.</li>}
-              {moveHistoryUI.map((move, index) => (
-                <li key={index} className={`${move.player === PlayerColor.WHITE ? ai1PersonaColor : ai2PersonaColor} mb-0.5`}>
-                  {move.player === PlayerColor.WHITE ? `${move.moveNumber}. ` : ""} 
-                  {move.player === PlayerColor.WHITE ? "W: " : "B: "} 
+          <SidebarPanel title="Move History (Current Game)" className="flex-shrink-0 max-h-32 overflow-y-auto custom-scrollbar">
+            <ol className="list-none text-xs space-y-0.5 overflow-y-auto max-h-full pr-1 custom-scrollbar">
+              {moveHistory.length === 0 && <li className="italic text-[var(--color-text-muted)] list-none">No moves yet.</li>}
+              {moveHistory.slice().reverse().map((move, index) => (
+                <li key={move.moveTimestamp + move.uci} className={`${move.player === PlayerColor.WHITE ? 'text-[var(--color-ai1-text)]' : 'text-[var(--color-ai2-text)]'} opacity-90`}>
+                  {`${moveHistory.length - index}. `}
                   {move.uci}
                 </li>
               ))}
-            </ul>
-          </div>
+            </ol>
+          </SidebarPanel>
 
-          <div className="bg-[var(--color-bg-terminal)] border border-[var(--color-border-base)] p-2 rounded shadow flex-1 min-h-[180px]"> {/* Kept flex-1, so it grows */}
-            <h4 className="text-sm font-semibold text-[var(--color-text-heading)] border-b border-[var(--color-border-strong)] pb-1 mb-1">Game Statistics (Current Session)</h4>
-            <div className="text-xs text-[var(--color-text-muted)] space-y-0.5">
-              <p>Total Moves (Current Game): {moveHistoryUI.length}</p>
-              <p>Avg Move Time: {averageMoveTime}s</p>
-              <p>FullMove Clock: {fenParts.fullMove}</p>
-              <p>HalfMove Clock: {fenParts.halfMove}</p>
-              <p>Game Phase: {getGamePhase(fenParts.fullMove)}</p>
-              <p>Castling: {fenParts.castling === "-" ? "None" : fenParts.castling}</p>
-              <p>En Passant: {fenParts.enPassant === "-" ? "None" : fenParts.enPassant}</p>
-              <hr className="border-[var(--color-border-strong)] opacity-30 my-1"/>
-              <p>White Wins ({AI1_NAME}): {whiteWins} ({whiteWinPercentage}%)</p>
-              <p>Black Wins ({AI2_NAME}): {blackWins} ({blackWinPercentage}%)</p>
-              <p>Draws: {draws} ({drawPercentage}%)</p>
-              <p>Current Streak: {currentStreak.player ? `${currentStreak.player === PlayerColor.WHITE ? AI1_NAME : currentStreak.player === PlayerColor.BLACK ? AI2_NAME : 'Draw'}: ${currentStreak.count}` : 'None'}</p>
-              <p>Longest White Streak: {longestWhiteStreak}</p>
-              <p>Longest Black Streak: {longestBlackStreak}</p>
-            </div>
-          </div>
-          
-          <div className="bg-[var(--color-bg-terminal)] border border-[var(--color-border-base)] p-2 rounded shadow flex flex-col min-h-[150px] max-h-56"> {/* Removed flex-1, set max-h */}
-            <div className="flex justify-between items-center border-b border-[var(--color-border-strong)] pb-1 mb-1">
-                <h4 className="text-sm font-semibold text-[var(--color-text-heading)]">Game History Archive</h4>
-                <button
-                    onClick={handleExportAllGames}
-                    disabled={gameHistoryArchive.length === 0}
-                    className="px-2 py-0.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs"
-                    title="Export all archived games"
-                >
-                    Export All
-                </button>
-            </div>
-            <ul className="text-xs text-[var(--color-text-muted)] overflow-y-auto log-display flex-grow pr-1">
-                {gameHistoryArchive.length === 0 && <li className="italic">No games archived yet.</li>}
-                {gameHistoryArchive.slice().reverse().map((game, index) => ( // Show newest first
-                    <li key={game.id} className="mb-1 p-1 border-b border-dashed border-[var(--color-border-base)] border-opacity-30">
-                        <div className="flex justify-between items-center">
-                            <span>
-                                Game {gameHistoryArchive.length - index}: {game.outcome.winner === PlayerColor.WHITE ? AI1_NAME : game.outcome.winner === PlayerColor.BLACK ? AI2_NAME : game.outcome.winner.toUpperCase()} wins ({Math.ceil(game.moves.length/2)} moves)
-                            </span>
-                            <button
-                                onClick={() => handleExportGameById(game.id)}
-                                className="px-1.5 py-0.5 bg-[var(--color-primary-700)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-primary-600)] focus-ring-accent text-[10px]"
-                                title="Export this game"
-                            >
-                                Export
-                            </button>
-                        </div>
-                         <small className="block opacity-70">{new Date(game.endTime).toLocaleString()}</small>
-                    </li>
-                ))}
-            </ul>
-          </div>
+          <SidebarPanel title="System Log" className="flex-shrink-0 max-h-40 overflow-y-auto custom-scrollbar">
+            <ul className="text-xs space-y-0.5 overflow-y-auto max-h-full pr-1 custom-scrollbar">
+              {systemLog.length === 0 && <li className="italic text-[var(--color-text-muted)]">No system events yet.</li>}
+              {systemLog.slice().reverse().map(entry => {
+                  let textColor = 'text-[var(--color-text-muted)]';
+                  if (entry.type === 'ERROR') textColor = 'text-[var(--color-error)]';
+                  else if (entry.type === 'CAPTURE') textColor = 'text-green-400';
+                  else if (entry.type === 'STRATEGY') textColor = 'text-yellow-400';
+                  else if (entry.type === 'EVENT') textColor = 'text-[var(--color-system-message)]';
+                  else if (entry.player === PlayerColor.WHITE) textColor = 'text-[var(--color-ai1-text)]';
+                  else if (entry.player === PlayerColor.BLACK) textColor = 'text-[var(--color-ai2-text)]';
+                  else if (entry.player === OVERMIND_DATA_MASTER_SENDER_NAME) textColor = 'text-purple-400';
 
-        </div>
+
+                  return (
+                      <li key={entry.id} className={`${textColor} opacity-90 leading-snug`}>
+                          {entry.message}
+                      </li>
+                  );
+              })}
+            </ul>
+          </SidebarPanel>
+
+          <SidebarPanel title="Game Statistics (Current Session)" className="flex-grow min-h-[150px] overflow-y-auto custom-scrollbar">
+            <div className="text-xs space-y-0.5">
+                <p>Total Moves (Game): {moveHistory.length}</p>
+                <p>FullMove Clock: {parsedFenData.fullMove}</p>
+                <p>HalfMove Clock: {parsedFenData.halfMove}</p>
+                <p>Castling: {parsedFenData.castling}</p>
+                <p>En Passant: {parsedFenData.enPassant === '-' ? 'None' : parsedFenData.enPassant}</p>
+                <hr className="my-1 border-[var(--color-border-strong)] opacity-30"/>
+                <p>Last Turn Length: <span className="font-semibold text-[var(--color-accent-400)]">{lastTurnDurationDisplay}</span></p>
+                <p>Current Turn Time: <span className="font-semibold text-[var(--color-accent-300)]">{currentAiTurnDurationDisplay}</span></p>
+                <p>Average Turn Time: <span className="font-semibold text-[var(--color-text-muted)]">{averageTurnTimeDisplay}</span></p>
+                <p>Total Game Time: <span className="font-semibold text-[var(--color-info)]">{totalGameTimeDisplay}</span></p>
+                <hr className="my-1 border-[var(--color-border-strong)] opacity-30"/>
+                <p>White Wins ({AI1_NAME}): {whiteWins} ({totalSessionGames > 0 ? (whiteWins/totalSessionGames*100).toFixed(1) : 0.0}%)</p>
+                <p>Black Wins ({AI2_NAME}): {blackWins} ({totalSessionGames > 0 ? (blackWins/totalSessionGames*100).toFixed(1) : 0.0}%)</p>
+                <p>Draws: {draws} ({totalSessionGames > 0 ? (draws/totalSessionGames*100).toFixed(1) : 0.0}%)</p>
+                <p>Current Streak: {currentStreak.player ? `${currentStreak.player === 'w' ? AI1_NAME : (currentStreak.player === 'b' ? AI2_NAME : 'Draws') } - ${currentStreak.count}` : 'None'}</p>
+                <p>Longest White Streak: {longestWhiteStreak}</p>
+                <p>Longest Black Streak: {longestBlackStreak}</p>
+            </div>
+          </SidebarPanel>
+
+          <SidebarPanel title="Game History Archive" className="flex-shrink-0 mt-auto max-h-24 overflow-y-auto custom-scrollbar">
+            <div className="text-xs space-y-0.5 overflow-y-auto max-h-full pr-1">
+              {gameHistoryArchive.length === 0 && <p className="italic text-[var(--color-text-muted)]">No games archived yet.</p>}
+              {gameHistoryArchive.map(game => (
+                <div key={game.id} className="border-b border-dashed border-[var(--color-border-base)] border-opacity-30 pb-0.5 mb-0.5">
+                  <p>ID: <span className="text-[var(--color-text-muted)]">{game.id.substring(game.id.length-4)}</span>, Outcome: <span className={game.outcome.winner === PlayerColor.WHITE ? "text-[var(--color-ai1-text)]" : game.outcome.winner === PlayerColor.BLACK ? "text-[var(--color-ai2-text)]" : ""}>{game.outcome.winner === 'draw' ? 'Draw' : `${game.outcome.winner === PlayerColor.WHITE ? AI1_NAME : AI2_NAME} Won`}</span> ({game.moves.length} moves)</p>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={handleExportGameHistoryArchive}
+              disabled={gameHistoryArchive.length === 0}
+              className="w-full mt-1 text-[10px] p-0.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] disabled:opacity-50 disabled:cursor-not-allowed focus-ring-accent"
+            >
+              Export All
+            </button>
+          </SidebarPanel>
+        </aside>
       </div>
+      <style dangerouslySetInnerHTML={{ __html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb-hover); border-radius: 3px; }
+        .custom-scrollbar { scrollbar-width: thin; scrollbar-color: var(--color-scrollbar-thumb-hover) rgba(0,0,0,0.2); }
+      ` }} />
     </div>
   );
 };
-
-export default ChessModeContainer;

@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { ChessBoardState, ChessSquare, PlayerColor } from '../../types';
 import { getPieceUnicode } from '../../utils/chessLogic';
@@ -21,7 +22,8 @@ const ChessBoardDisplay: React.FC<ChessBoardDisplayProps> = ({
     const pieceUnicode = square ? getPieceUnicode(square.symbol, square.color) : '';
     const isLightSquare = (r_idx + c_idx) % 2 === 0;
     
-    let squareClasses = `w-12 h-12 md:w-14 md:h-14 flex items-center justify-center text-3xl md:text-4xl cursor-pointer transition-colors duration-150 `;
+    // Increased square size and text size
+    let squareClasses = `w-16 h-16 md:w-20 md:h-20 flex items-center justify-center text-5xl md:text-6xl cursor-pointer transition-colors duration-150 `;
     squareClasses += isLightSquare ? 'bg-amber-100 hover:bg-amber-200' : 'bg-amber-600 hover:bg-amber-700';
 
     if (selectedSquare && selectedSquare.row === r_idx && selectedSquare.col === c_idx) {

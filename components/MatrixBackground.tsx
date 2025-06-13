@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useCallback } from 'react';
 import { MatrixSettings } from '../types';
 import { KATAKANA_CHARS } from '../constants'; // Default to Katakana, can be made dynamic if needed

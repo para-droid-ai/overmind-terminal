@@ -1,7 +1,13 @@
-
 import { ChessBoardState, ChessPiece, ChessSquare, PieceSymbol, PlayerColor, UCIMove } from '../types';
 
 export const INITIAL_BOARD_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+export interface MoveValidationResult {
+  isValid: boolean;
+  reason?: string;
+  isCapture?: boolean;
+  capturedPiece?: ChessPiece | null; 
+}
 
 export function getPieceUnicode(piece: PieceSymbol, color: PlayerColor): string {
   switch (color) {
@@ -27,6 +33,25 @@ export function getPieceUnicode(piece: PieceSymbol, color: PlayerColor): string 
       break;
   }
   return '';
+}
+
+export function isFenPotentiallyValid(fen: string): { isValid: boolean; reason?: string } {
+  const parts = fen.split(' ');
+  if (parts.length !== 6) {
+    return { isValid: false, reason: "FEN does not have 6 parts." };
+  }
+  const piecePlacement = parts[0];
+  if (!piecePlacement.includes('k')) {
+    return { isValid: false, reason: "Missing Black King (k)." };
+  }
+  if (!piecePlacement.includes('K')) {
+    return { isValid: false, reason: "Missing White King (K)." };
+  }
+  // Basic check for 8 ranks (7 slashes)
+  if ((piecePlacement.match(/\//g) || []).length !== 7) {
+    return { isValid: false, reason: "Piece placement does not have 8 ranks (missing slashes)." };
+  }
+  return { isValid: true };
 }
 
 export function fenToBoard(fen: string): { board: ChessBoardState; currentPlayer: PlayerColor; castling: string; enPassant: string; halfMove: number; fullMove: number; } {
@@ -145,15 +170,15 @@ export function applyMoveToBoard(board: ChessBoardState, uciMove: UCIMove): Ches
     if (pieceToMove.symbol === PieceSymbol.KING) {
       const colDiff = uciMove.to.col - uciMove.from.col;
       if (colDiff === 2) { // Kingside castle
-        const rook = newBoard[uciMove.from.row][7]; // Rook from h-file (col 7)
+        const rook = newBoard[uciMove.from.row][7]; 
         if (rook && rook.symbol === PieceSymbol.ROOK && rook.color === pieceToMove.color) {
-            newBoard[uciMove.from.row][5] = rook; // Rook to f-file (col 5)
+            newBoard[uciMove.from.row][5] = rook; 
             newBoard[uciMove.from.row][7] = null;
         }
       } else if (colDiff === -2) { // Queenside castle
-        const rook = newBoard[uciMove.from.row][0]; // Rook from a-file (col 0)
+        const rook = newBoard[uciMove.from.row][0]; 
          if (rook && rook.symbol === PieceSymbol.ROOK && rook.color === pieceToMove.color) {
-            newBoard[uciMove.from.row][3] = rook; // Rook to d-file (col 3)
+            newBoard[uciMove.from.row][3] = rook; 
             newBoard[uciMove.from.row][0] = null;
         }
       }
@@ -170,77 +195,118 @@ export function applyMoveToBoard(board: ChessBoardState, uciMove: UCIMove): Ches
   return newBoard;
 }
 
-export function isMoveValid(board: ChessBoardState, uciMove: UCIMove, player: PlayerColor): boolean {
-  // Check if 'from' and 'to' squares are the same
-  if (uciMove.from.row === uciMove.to.row && uciMove.from.col === uciMove.to.col) {
-    console.warn(`isMoveValid: Invalid move - 'from' and 'to' squares are identical: ${String.fromCharCode(97 + uciMove.from.col)}${8 - uciMove.from.row}`);
-    return false;
-  }
+export function isMoveValid(
+    board: ChessBoardState,
+    uciMove: UCIMove,
+    player: PlayerColor,
+    enPassantTargetSquareFen: string // e.g., "e3" or "-"
+): MoveValidationResult {
+    const { from, to, promotion } = uciMove;
+    const piece = board[from.row]?.[from.col];
 
-  const fromSquare = board[uciMove.from.row]?.[uciMove.from.col];
-  
-  if (!fromSquare) {
-    console.warn(`isMoveValid: No piece at source square ${String.fromCharCode(97 + uciMove.from.col)}${8 - uciMove.from.row}`);
-    return false; 
-  }
-  
-  const piece = fromSquare; // Renamed for clarity
-  if (piece.color !== player) {
-    console.warn(`isMoveValid: Piece at source ${String.fromCharCode(97 + uciMove.from.col)}${8 - uciMove.from.row} is not player's piece. Piece color: ${piece.color}, Player: ${player}`);
-    return false; 
-  }
-
-  const targetSquareContent = board[uciMove.to.row]?.[uciMove.to.col];
-  if (targetSquareContent && targetSquareContent.color === player) {
-    console.warn(`isMoveValid: Cannot capture own piece at target ${String.fromCharCode(97 + uciMove.to.col)}${8 - uciMove.to.row}`);
-    return false; // Cannot capture own piece
-  }
-
-  // Special handling for King moves to allow for castling UCI
-  if (piece.symbol === PieceSymbol.KING) {
-    const colDiff = Math.abs(uciMove.to.col - uciMove.from.col);
-    const rowDiff = Math.abs(uciMove.to.row - uciMove.from.row);
-
-    if (rowDiff === 0 && colDiff === 2) {
-      // This is a castling attempt (e.g., e1g1, e8g8, e1c1, e8c8)
-      // For basic validation, we allow this. Full castling legality (rights, path clear, not in check)
-      // is handled by more complex logic (or implicitly by AI knowing the rules).
-      // The key is that applyMoveToBoard will handle moving the rook.
-    } else if (colDiff <= 1 && rowDiff <= 1 && (colDiff !== 0 || rowDiff !== 0)) {
-      // Standard 1-square king move
-    } else {
-      console.warn(`isMoveValid: Invalid king move pattern for King. From ${uciMove.from.row},${uciMove.from.col} To ${uciMove.to.row},${uciMove.to.col}`);
-      return false;
+    if (!piece) {
+        return { isValid: false, reason: `No piece at source square ${String.fromCharCode(97 + from.col)}${8 - from.row}.` };
     }
-  }
-
-
-  // Enhanced promotion validation
-  if (uciMove.promotion) {
-    if (piece.symbol !== PieceSymbol.PAWN) {
-      console.warn(`isMoveValid: Invalid promotion attempt - piece is not a pawn. Piece: ${piece.symbol}`);
-      return false; // Only pawns can promote
+    if (piece.color !== player) {
+        return { isValid: false, reason: `Piece at ${String.fromCharCode(97 + from.col)}${8 - from.row} is not player's piece (is ${piece.color}, player is ${player}).` };
     }
-    if (piece.color === PlayerColor.WHITE && uciMove.to.row !== 0) {
-      console.warn(`isMoveValid: Invalid promotion attempt - White pawn not on rank 0. To row: ${uciMove.to.row}`);
-      return false; // White promotes on rank 0 (board index)
-    }
-    if (piece.color === PlayerColor.BLACK && uciMove.to.row !== 7) {
-      console.warn(`isMoveValid: Invalid promotion attempt - Black pawn not on rank 7. To row: ${uciMove.to.row}`);
-      return false; // Black promotes on rank 7 (board index)
-    }
-  }
-  
-  // TODO: Add actual chess rules validation (piece movement, captures, check, etc.)
-  // For now, this is a placeholder for much more complex logic.
-  // We're mostly relying on the AI providing valid moves that adhere to FEN.
 
-  return true; 
+    const targetPiece = board[to.row]?.[to.col];
+    if (targetPiece && targetPiece.color === player) {
+        return { isValid: false, reason: `Cannot capture own piece at ${String.fromCharCode(97 + to.col)}${8 - to.row}.` };
+    }
+    
+    const isCapture = !!targetPiece;
+    const dr = to.row - from.row;
+    const dc = to.col - from.col;
+
+    switch (piece.symbol) {
+        case PieceSymbol.PAWN:
+            const direction = player === PlayerColor.WHITE ? -1 : 1;
+            // Standard 1-square move
+            if (dc === 0 && dr === direction && !targetPiece) { /* Allow */ }
+            // Initial 2-square move
+            else if (dc === 0 && dr === 2 * direction && ((player === PlayerColor.WHITE && from.row === 6) || (player === PlayerColor.BLACK && from.row === 1)) && !targetPiece && !board[from.row + direction]?.[from.col]) { /* Allow */ }
+            // Capture
+            else if (Math.abs(dc) === 1 && dr === direction && targetPiece && targetPiece.color !== player) { /* Allow */ }
+            // En Passant
+            else if (enPassantTargetSquareFen !== "-") {
+                const epCol = enPassantTargetSquareFen.charCodeAt(0) - 'a'.charCodeAt(0);
+                const epRow = 8 - parseInt(enPassantTargetSquareFen[1]);
+                if (Math.abs(dc) === 1 && dr === direction && to.row === epRow && to.col === epCol && !targetPiece) {
+                    // For en passant, the captured pawn is on the same rank as 'from' and same col as 'to'
+                    const capturedPawnRow = from.row;
+                    const capturedPawnCol = to.col;
+                    const epCapturedPiece = board[capturedPawnRow]?.[capturedPawnCol];
+                    if (epCapturedPiece && epCapturedPiece.symbol === PieceSymbol.PAWN && epCapturedPiece.color !== player) {
+                         // Valid en passant capture
+                    } else {
+                        return { isValid: false, reason: "Invalid en passant attempt (target square not empty or conditions met)." };
+                    }
+                } else if (Math.abs(dc) === 1 && dr === direction && targetPiece && targetPiece.color !== player) {
+                    // This is a regular capture, not en passant related to the target square check
+                } else if (Math.abs(dc) === 1 && dr === direction && !targetPiece && (to.row !== epRow || to.col !== epCol) ) {
+                     return { isValid: false, reason: "Pawn diagonal move must be a capture or valid en passant." };
+                } else if (!(dc === 0 && dr === direction && !targetPiece) && !(dc === 0 && dr === 2 * direction && ((player === PlayerColor.WHITE && from.row === 6) || (player === PlayerColor.BLACK && from.row === 1)) && !targetPiece && !board[from.row + direction]?.[from.col])) {
+                     return { isValid: false, reason: "Invalid pawn move." };
+                }
+            }
+            else if (!(dc === 0 && dr === direction && !targetPiece) && !(dc === 0 && dr === 2 * direction && ((player === PlayerColor.WHITE && from.row === 6) || (player === PlayerColor.BLACK && from.row === 1)) && !targetPiece && !board[from.row + direction]?.[from.col])) {
+                 return { isValid: false, reason: "Invalid pawn move." };
+            }
+
+            if (promotion) {
+                if (!((player === PlayerColor.WHITE && to.row === 0) || (player === PlayerColor.BLACK && to.row === 7))) {
+                    return { isValid: false, reason: "Pawn promotion attempted on incorrect rank." };
+                }
+            }
+            break;
+        case PieceSymbol.KNIGHT:
+            if (!((Math.abs(dr) === 2 && Math.abs(dc) === 1) || (Math.abs(dr) === 1 && Math.abs(dc) === 2))) {
+                return { isValid: false, reason: "Invalid knight move pattern." };
+            }
+            break;
+        case PieceSymbol.BISHOP:
+        case PieceSymbol.ROOK:
+        case PieceSymbol.QUEEN:
+            if (piece.symbol === PieceSymbol.BISHOP && Math.abs(dr) !== Math.abs(dc)) {
+                return { isValid: false, reason: "Bishop must move diagonally." };
+            }
+            if (piece.symbol === PieceSymbol.ROOK && dr !== 0 && dc !== 0) {
+                return { isValid: false, reason: "Rook must move horizontally or vertically." };
+            }
+            if (piece.symbol === PieceSymbol.QUEEN && Math.abs(dr) !== Math.abs(dc) && dr !== 0 && dc !== 0) {
+                return { isValid: false, reason: "Invalid queen move pattern." };
+            }
+
+            // Path check for sliding pieces
+            const stepR = dr === 0 ? 0 : dr / Math.abs(dr);
+            const stepC = dc === 0 ? 0 : dc / Math.abs(dc);
+            let r = from.row + stepR;
+            let c = from.col + stepC;
+            while (r !== to.row || c !== to.col) {
+                if (board[r]?.[c]) {
+                    return { isValid: false, reason: `Path blocked for ${piece.symbol} at ${String.fromCharCode(97 + c)}${8 - r}.` };
+                }
+                r += stepR;
+                c += stepC;
+            }
+            break;
+        case PieceSymbol.KING:
+            if (Math.abs(dr) > 1 || Math.abs(dc) > 2) { // dc > 1 for castling
+                return { isValid: false, reason: "King moved too far." };
+            }
+            if (Math.abs(dc) === 2 && dr === 0) { // Castling UCI move
+                // Basic pattern for UCI castling like e1g1. Full legality (rights, path, checks) complex.
+            } else if (!(Math.abs(dr) <= 1 && Math.abs(dc) <= 1)) {
+                 return { isValid: false, reason: "Invalid king move pattern." };
+            }
+            break;
+    }
+    // TODO: Add check for "does this move leave king in check?" (requires more complex logic)
+    return { isValid: true, isCapture, capturedPiece: targetPiece };
 }
 
-// Placeholder for game status check
 export function getGameStatus(board: ChessBoardState, currentPlayer: PlayerColor): string {
-  // TODO: Implement check, checkmate, stalemate detection
-  // For now, just indicate whose turn it is.
   return `${currentPlayer === PlayerColor.WHITE ? 'White' : 'Black'} to move.`;
 }
