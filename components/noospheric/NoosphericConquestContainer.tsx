@@ -69,6 +69,8 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   
   const [showGemQAnalysisHistory, setShowGemQAnalysisHistory] = useState(false);
   const [showAxiomAnalysisHistory, setShowAxiomAnalysisHistory] = useState(false);
+  const [isDataMenuOpen, setIsDataMenuOpen] = useState(false); // New state for save/load dropdown
+
 
   // --- New Refs for RAF Loop ---
   const gameLoopIdRef = useRef<number>(0);
@@ -149,6 +151,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   });
   const gameStateRef = useRef(gameState);
   const isMountedRef = useRef(true);
+  const loadGameInputRef = useRef<HTMLInputElement>(null);
 
 
   const [isLoadingAI, setIsLoadingAI] = useState<NoosphericPlayerId | null>(null);
@@ -182,6 +185,26 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   const lastTurnDurationMsRef = useRef<number | null>(null); // Stores duration of last AI processing
   
   const kjControlStreakRef = useRef<{ 'GEM-Q': number; 'AXIOM': number }>({ 'GEM-Q': 0, 'AXIOM': 0 });
+
+  // Add this new useEffect inside the NoosphericConquestContainer component
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        // A more robust way to check might involve refs on the button and menu
+        // but for this simple case, checking the class of the target is sufficient.
+        const target = event.target as HTMLElement;
+        if (isDataMenuOpen && !target.closest('.relative')) { // Assuming this is specific enough
+            setIsDataMenuOpen(false);
+        }
+    };
+
+    if (isDataMenuOpen) {
+        document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isDataMenuOpen]);
 
 
   const availableModifiers: Modifier[] = [
@@ -995,10 +1018,25 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             };
         }
 
+        // --- THE FIX: Prune the history before sending it to the AI ---
+        const PRUNED_HISTORY_LENGTH = 3; // Keep only the last 3 analyses
+
+        const prunedFactionsData = JSON.parse(JSON.stringify(visibleFactionsData)); // Deep copy to avoid mutating state
+        if (prunedFactionsData[currentPlayerId]?.tacticalAnalysisHistory) {
+            prunedFactionsData[currentPlayerId].tacticalAnalysisHistory = 
+                prunedFactionsData[currentPlayerId].tacticalAnalysisHistory.slice(-PRUNED_HISTORY_LENGTH);
+        }
+        // --- END OF FIX ---
+
         const basePromptGameState = {
-            currentTurn: gameStateRef.current.turn, currentPhase: currentPhaseSnapshot, yourFactionId: currentPlayerId,
-            mapNodes: visibleMapNodes, mapType: gameStateRef.current.mapType, isFogOfWarActive: isFogOfWarCurrentlyActive,
-            isGreatWarMode: isGreatWarActive, factions: visibleFactionsData,
+            currentTurn: gameStateRef.current.turn,
+            currentPhase: currentPhaseSnapshot,
+            yourFactionId: currentPlayerId,
+            mapNodes: visibleMapNodes,
+            mapType: gameStateRef.current.mapType,
+            isFogOfWarActive: isFogOfWarCurrentlyActive,
+            isGreatWarMode: isGreatWarActive,
+            factions: prunedFactionsData, // Use the pruned data
         };
         let basePromptString = `Current Game State:\n${JSON.stringify(basePromptGameState, null, 2)}\n\nYour turn (${currentPlayerId}) for phase ${currentPhaseSnapshot}. Provide JSON response.`;
         if (isGreatWarActive) basePromptString += GREAT_WAR_AI_SYSTEM_PROMPT_ADDENDUM;
@@ -1293,6 +1331,52 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     URL.revokeObjectURL(url);
     addSystemLog("Game state exported.", "INFO");
   };
+  
+  const handleLoadGameState = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const result = e.target?.result as string;
+                const backupData = JSON.parse(result) as NoosphericGameState;
+                if (backupData.mapNodes && backupData.factions && backupData.mapType) {
+                    setGameState(backupData);
+                    setCurrentMapTypeInternal(backupData.mapType);
+                    setActiveModifiers({
+                        isGreatWarMode: backupData.isGreatWarMode ?? false,
+                        isFogOfWarActive: backupData.isFogOfWarActive
+                    });
+                    setIsGameStarted(true); // Mark as started since we're loading a state
+                    // Reset timers and related states as this is effectively a new "session"
+                    gameStartTimestampRef.current = Date.now();
+                    phaseStartTimestampRef.current = Date.now();
+                    currentTurnStartTimestampRef.current = Date.now();
+                    elapsedGameTimeBeforePauseRef.current = 0;
+                    elapsedPhaseTimeBeforePauseRef.current = 0;
+                    allFullTurnDurationsMsRef.current = [];
+                    completedFullTurnsRef.current = 0;
+                    lastTurnDurationMsRef.current = 0;
+                    setTotalGameTimeMs(0);
+                    setCurrentPhaseTimeMs(0);
+                    setTotalGameTimeDisplay(formatDuration(0));
+                    setCurrentPhaseTimeDisplay(formatDuration(0));
+                    setAverageFullTurnTimeDisplay(formatDuration(0));
+                    setLastAiProcessingTimeDisplay(formatDuration(0));
+
+                    addSystemLog("Game state loaded from file.", "INFO");
+                } else {
+                    throw new Error("Invalid game state file format.");
+                }
+            } catch (error: any) {
+                addSystemLog(`Error loading game state: ${error.message}`, "ERROR");
+            }
+        };
+        reader.readAsText(file);
+        if (event.target) event.target.value = ''; // Clear file input
+    }
+  };
+
 
   const renderHeader = () => (
     <header className="flex flex-col sm:flex-row justify-between items-center mb-2 p-2 bg-[var(--color-bg-panel)] rounded-md shadow-md flex-shrink-0">
@@ -1372,13 +1456,54 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
             >
                 {gameState.isPaused ? 'Resume' : 'Pause'}
             </button>
-             <button
-                onClick={handleExportGameState}
-                disabled={!isGameStarted}
-                className="px-2 py-1 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent text-xs disabled:opacity-50"
-            >
-                Export State
-            </button>
+            {/* --- NEW UNIFIED SAVE/LOAD DATA MENU --- */}
+            <div className="relative">
+                <button
+                    onClick={() => setIsDataMenuOpen(prev => !prev)}
+                    className="p-1.5 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
+                    title="Save or Load Game State"
+                    aria-haspopup="true"
+                    aria-expanded={isDataMenuOpen}
+                >
+                    {/* Save/Load Icon */}
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                </button>
+                
+                {/* Dropdown Menu */}
+                {isDataMenuOpen && (
+                    <div 
+                        className="absolute right-0 mt-2 w-48 bg-[var(--color-bg-panel)] border-2 border-[var(--color-border-base)] rounded-md shadow-lg z-20"
+                        role="menu"
+                    >
+                        <button
+                            onClick={() => { handleExportGameState(); setIsDataMenuOpen(false); }}
+                            disabled={!isGameStarted}
+                            className="w-full text-left px-4 py-2 text-xs text-[var(--color-text-base)] hover:bg-[var(--color-bg-button-secondary-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                            role="menuitem"
+                        >
+                            Export Current State (.json)
+                        </button>
+                        <button
+                            onClick={() => { loadGameInputRef.current?.click(); setIsDataMenuOpen(false); }}
+                            disabled={isGameStarted}
+                            className="w-full text-left px-4 py-2 text-xs text-[var(--color-text-base)] hover:bg-[var(--color-bg-button-secondary-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                            role="menuitem"
+                        >
+                            Load State from File...
+                        </button>
+                    </div>
+                )}
+            </div>
+            <input
+                type="file"
+                ref={loadGameInputRef}
+                onChange={handleLoadGameState}
+                className="hidden"
+                accept=".json"
+            />
+            {/* --- END OF NEW MENU --- */}
              <select
                 id="ncAppModeSelectHeader"
                 value={currentAppMode}
