@@ -1,5 +1,5 @@
 
-import { AIPersona, AppMode, ModeStartMessageSeed, ThemeName, ThemeColors, ModeInfo, SenderName, ChimeraItem } from './types';
+import { AIPersona, AppMode, ModeStartMessageSeed, ThemeName, ThemeColors, ModeInfo, SenderName, ChimeraItem, LyriaPrompt, LiveMusicGenerationConfig } from './types';
 import { Content } from '@google/genai';
 
 export const KATAKANA_CHARS = "アァカサタナハマヤャラワガザダバパイィキシチニヒミリヰギジヂビピウゥクスツヌフムユュルグズブヅプエェケセテネヘメレヱゲゼデベペオォコソトノホモヨョロヲゴゾドボポヴッン";
@@ -98,7 +98,6 @@ Initialize narrative sequence...`;
 export const LYRIA_PROMPT_COLORS = ["#9900ff", "#5200ff", "#ff25f6", "#2af6de", "#ffdd28", "#3dffab", "#f05a05", "#04f100"];
 export const LYRIA_MODEL_NAME = 'lyria-realtime-exp';
 export const MAX_LYRIA_PROMPTS = 6;
-
 
 export const THEMES: Record<ThemeName, ThemeColors> = {
   terminal: {
@@ -503,3 +502,25 @@ Standard victory conditions are void. This is a war of attrition.
 **EVOLVED UNITS:** These elite units are your primary tool for breaking stalemates. They provide a massive bonus (+${EVOLVED_UNIT_COMBAT_BONUS}) in combat. Use them to spearhead critical assaults or defend high-value nodes.
 **SURRENDER:** If your strategic situation is hopeless (no CNs, no production, vastly outnumbered), you may forfeit. To do so, your ONLY action for the turn must be the JSON object: {"actions": [{"type": "SURRENDER", "reason": "A detailed explanation of why the strategic situation is hopeless."}], "tacticalAnalysis": "Declaring surrender due to untenable strategic position."}
 **STRATEGY:** Be aggressive. Cripple enemy production. Break their lines. Victory requires total domination.`;
+
+// --- ADD THIS ENTIRE BLOCK TO THE END OF THE FILE ---
+
+/**
+ * The default musical prompts for the Lyria Music Engine on first load or reset.
+ */
+export const INITIAL_LYRIA_PROMPTS: Omit<LyriaPrompt, 'promptId' | 'color'>[] = [
+  { text: "post-rock full band wall of sound", weight: 1.0 },
+  { text: "dotted eigth delay", weight: 1.3 },
+  { text: "airy drums", weight: 1.3 },
+  { text: "lofi-chillwave", weight: 1.3 },
+  { text: "fender rhodes with room reverb", weight: 0.7 }
+];
+
+/**
+ * The default generation parameters for the Lyria Music Engine.
+ */
+export const INITIAL_LYRIA_CONFIG: LiveMusicGenerationConfig = {
+  temperature: 1.1,
+  topK: 40,
+  guidance: 4,
+};

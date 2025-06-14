@@ -32,7 +32,8 @@ import {
   GEM_Q_INITIATION_PROMPT, MAX_TURN_CYCLES, NOOSPHERIC_CONQUEST_EXE_MODE_START_MESSAGES,
   STORY_GENRES, STORY_CHARACTERS, STORY_SETTINGS, STORY_CONFLICTS_OR_ITEMS, STORY_KEYWORDS,
   STORY_OPTION_GENERATOR_SYSTEM_PROMPT, STORY_WEAVER_AI_SYSTEM_PROMPT,
-  MAX_LYRIA_PROMPTS, LYRIA_PROMPT_COLORS, LYRIA_MODEL_NAME
+  MAX_LYRIA_PROMPTS, LYRIA_PROMPT_COLORS, LYRIA_MODEL_NAME,
+  INITIAL_LYRIA_PROMPTS, INITIAL_LYRIA_CONFIG
 } from './constants';
 import { INITIAL_BOARD_FEN, fenToBoard } from './utils/chessLogic';
 
@@ -211,8 +212,16 @@ const App: React.FC = () => {
   // --- Lyria State (Lifted from ControlsPanel) ---
   const [isLyriaModalOpen, setIsLyriaModalOpen] = useState(false); 
   const [isLyriaSaveLoadModalOpen, setIsLyriaSaveLoadModalOpen] = useState(false);
-  const [lyriaPrompts, setLyriaPrompts] = useState<LyriaPrompt[]>([]);
-  const [lyriaConfig, setLyriaConfig] = useState<LiveMusicGenerationConfig>({ temperature: 1.1, topK: 40, guidance: 4.0 });
+  
+  const [lyriaPrompts, setLyriaPrompts] = useState<LyriaPrompt[]>(() => {
+    return INITIAL_LYRIA_PROMPTS.map((p, index) => ({
+      ...p,
+      promptId: `lyria-prompt-default-${Date.now() + index}`,
+      color: LYRIA_PROMPT_COLORS[index % LYRIA_PROMPT_COLORS.length]
+    }));
+  });
+  const [lyriaConfig, setLyriaConfig] = useState<LiveMusicGenerationConfig>(INITIAL_LYRIA_CONFIG);
+
   const [lyriaPlaybackState, setLyriaPlaybackState] = useState<LyriaPlaybackState>('stopped');
   const lyriaSessionRef = useRef<LiveMusicSession | null>(null);
   const lyriaSessionErrorRef = useRef<boolean>(false);
