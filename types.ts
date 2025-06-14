@@ -77,8 +77,6 @@ export interface ControlsPanelProps {
   activeTheme: ThemeName;
   onThemeChange: (themeName: ThemeName) => void;
   onOpenInfoModal: () => void;
-  onSaveChimeraGame?: () => void; 
-  onLoadChimeraGame?: (event: React.ChangeEvent<HTMLInputElement>) => void; 
   globalSelectedModelId?: string;
   onGlobalModelChange?: (modelId: string) => void;
   isEmergencyStopActive: boolean;
@@ -88,6 +86,26 @@ export interface ControlsPanelProps {
   activeApiKeySource: ApiKeySource;
   initialCustomKeyValue: string;
   apiKeyMissingError: boolean;
+
+  // Lyria Props lifted from ControlsPanel to App
+  lyriaPrompts: LyriaPrompt[];
+  lyriaConfig: LiveMusicGenerationConfig;
+  lyriaPlaybackState: LyriaPlaybackState;
+  lyriaStatusMessage: string;
+  isLyriaModalOpen: boolean;
+  onToggleLyriaModal: (isOpen: boolean) => void;
+  isLyriaSaveLoadModalOpen: boolean;
+  onToggleLyriaSaveLoadModal: (isOpen: boolean) => void;
+  onAddLyriaPrompt: () => void;
+  onRemoveLyriaPrompt: (id: string) => void;
+  onLyriaPromptTextChange: (id: string, text: string) => void;
+  onLyriaPromptWeightChange: (id: string, weight: number) => void;
+  onLyriaConfigChange: (key: keyof LiveMusicGenerationConfig, value: any) => void;
+  onLyriaPlayPause: () => void;
+  onLyriaResetContext: () => void;
+  isLyriaReady: boolean;
+  onSaveLyriaSettings: () => void;
+  onLoadLyriaSettings: (event: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
 export interface StorySeed {
@@ -255,9 +273,33 @@ export interface ChessSystemLogEntry {
   player?: PlayerColor | 'OVERMIND'; 
 }
 
+export interface ChessModeContainerProps { // Added to original user file content
+  ai1Chat: Chat | null;
+  ai2Chat: Chat | null;
+  genAI?: GoogleGenAI | null;
+  apiKeyMissing: boolean;
+  initialFen?: string;
+  initialPlayer?: PlayerColor;
+  initialCoTAI1?: string;
+  initialCoTAI2?: string;
+  initialGameStatus?: string;
+  chessResetToken: number;
+  currentAppMode: AppMode;
+  onModeChange: (newMode: AppMode) => void;
+  activeTheme: ThemeName;
+  onThemeChangeForApp: (themeName: ThemeName) => void;
+  isAiReadyForChessFromApp: boolean;
+  appInitializationError: string | null;
+  onOpenInfoModal: () => void;
+  lyriaPlaybackState: LyriaPlaybackState;
+  onLyriaPlayPause: () => void;
+  isLyriaReady: boolean;
+  isEmergencyStopActive: boolean;
+}
+
 
 export type NoosphericPlayerId = 'GEM-Q' | 'AXIOM' | 'NEUTRAL';
-export type NoosphericMapType = "Global Conflict" | "Twin Peaks" | "Classic Lattice" | "Fractured Core" | "The Seraphim Grid";
+export type NoosphericMapType = "Global Conflict" | "Twin Peaks" | "Classic Lattice" | "Fractured Core" | "The Seraphim Grid" | "The Tartarus Anomaly";
 
 export interface NoosphericNodeData {
   id: string; 
@@ -323,9 +365,30 @@ export interface NoosphericGameState {
   battleLog: BattleLogEntry[];
   mapType: NoosphericMapType; 
   isPaused: boolean;
-  winner?: NoosphericPlayerId | 'DRAW';
+  winner?: NoosphericPlayerId | 'DRAW' | 'SURRENDER';
   isFogOfWarActive: boolean;
+  isGreatWarMode?: boolean;
 }
+
+export interface NoosphericConquestContainerProps { // Added to original user file content
+  ai1Chat: Chat | null;
+  ai2Chat: Chat | null;
+  apiKeyMissing: boolean;
+  initialGameState?: NoosphericGameState;
+  initialMapType?: NoosphericMapType;
+  isGameStartedFromBackup?: boolean; 
+  currentAppMode: AppMode;
+  onModeChange: (newMode: AppMode) => void;
+  activeTheme: ThemeName;
+  isAiReadyForNoosphericFromApp: boolean;
+  appInitializationError: string | null;
+  onOpenInfoModal: () => void;
+  lyriaPlaybackState: LyriaPlaybackState;
+  onLyriaPlayPause: () => void;
+  isLyriaReady: boolean;
+  isEmergencyStopActive: boolean;
+}
+
 
 export type NoosphericActionType = 
   | 'DEPLOY_UNITS' 
@@ -364,6 +427,8 @@ export interface DiceRollDetail {
   outcome: string; 
   attackerUnitsRemaining: number;
   defenderUnitsRemaining: number;
+  attackerHadEvolved?: boolean;
+  defenderHadEvolved?: boolean;
 }
 
 export interface BattleLogEntry {

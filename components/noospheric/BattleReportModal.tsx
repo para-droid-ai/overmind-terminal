@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { BattleReportData, ThemeColors, NoosphericPlayerId } from '../../types';
-import { AI1_NAME, AI2_NAME } from '../../constants';
+import { AI1_NAME, AI2_NAME, EVOLVED_UNIT_COMBAT_BONUS } from '../../constants'; // Added EVOLVED_UNIT_COMBAT_BONUS
 
 interface BattleReportModalProps {
   report: BattleReportData;
@@ -97,9 +97,15 @@ const BattleReportModal: React.FC<BattleReportModalProps> = ({ report, factionCo
                   <div key={index} className="border-b border-dashed border-[var(--color-border-strong)] border-opacity-20 pb-1 mb-1 last:border-b-0 last:pb-0 last:mb-0">
                     <p>
                       <span className="font-semibold">Round {index + 1}:</span>
-                      <span style={{ color: getFactionColor(report.attacker) }} className="ml-1">{getFactionName(report.attacker)} ({roll.attackerUnitsRemaining + (roll.outcome.includes("Attacker Hits") || roll.outcome.includes("Clash") ? 0 : 1)}u): {roll.attackerRoll}</span>
+                      <span style={{ color: getFactionColor(report.attacker) }} className="ml-1">
+                        {getFactionName(report.attacker)}: {roll.attackerRoll}
+                        {roll.attackerHadEvolved && <span className="text-purple-400 text-xs italic" title={`+${EVOLVED_UNIT_COMBAT_BONUS} from Evolved Units`}> (EVO)</span>}
+                      </span>
                       <span className="mx-1">vs</span>
-                      <span style={{ color: getFactionColor(report.defender) }}>{getFactionName(report.defender)} ({roll.defenderUnitsRemaining + (roll.outcome.includes("Defender Hits") || roll.outcome.includes("Clash") ? 0 : 1)}u): {roll.defenderRoll}</span>
+                      <span style={{ color: getFactionColor(report.defender) }}>
+                        {getFactionName(report.defender)}: {roll.defenderRoll}
+                        {roll.defenderHadEvolved && <span className="text-purple-400 text-xs italic" title={`+${EVOLVED_UNIT_COMBAT_BONUS} from Evolved Units`}> (EVO)</span>}
+                      </span>
                     </p>
                     <p className="ml-2 pl-2 border-l border-[var(--color-border-base)] border-opacity-40 text-[var(--color-text-muted)]">{roll.outcome}.</p>
                     <p className="ml-2 pl-2 text-xs opacity-80"> Units A/D: {roll.attackerUnitsRemaining}/{roll.defenderUnitsRemaining}</p>

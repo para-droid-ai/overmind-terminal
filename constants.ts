@@ -46,12 +46,14 @@ export const FAB_HUB_ACTIVATION_COST = 15;
 export const FAB_HUB_GARRISON_MIN = 3;
 export const EVOLVE_UNIT_COST = 2;
 export const DEPLOY_STANDARD_UNIT_COST = 1;
+export const EVOLVED_UNIT_COMBAT_BONUS = 5;
 
 export const STORY_WEAVER_COLOR = 'text-[var(--color-story-weaver-text)]';
 export const CHIMERA_DM_COLOR = 'text-purple-400';
 export const CHIMERA_PLAYER_COLOR = 'text-sky-400';
 
 export const MAX_CHESS_RETRY_ATTEMPTS = 2;
+export const MAX_NOOSPHERIC_RETRY_ATTEMPTS = 2;
 export const MAX_AUTONOMOUS_TURNS = 5; 
 export const GEM_Q_INITIATION_PROMPT = "System online. Awaiting input or initiating standard protocol.";
 export const MAX_TURN_CYCLES = 15; 
@@ -91,6 +93,11 @@ Story Flow:
 Output: A segment of the story that directly continues the user's chosen path, immediately followed by the [GENERATE_IMAGE: ...] command.
 Do not repeat or prefix your response with "STORY_WEAVER:". Just provide the story segment directly.
 Initialize narrative sequence...`;
+
+// Lyria Constants
+export const LYRIA_PROMPT_COLORS = ["#9900ff", "#5200ff", "#ff25f6", "#2af6de", "#ffdd28", "#3dffab", "#f05a05", "#04f100"];
+export const LYRIA_MODEL_NAME = 'lyria-realtime-exp';
+export const MAX_LYRIA_PROMPTS = 6;
 
 
 export const THEMES: Record<ThemeName, ThemeColors> = {
@@ -244,7 +251,7 @@ Current Game State (JSON format) will be provided. This includes: current turn, 
     *   'ACTIVATE_FABRICATION_HUB { nodeId: string }': Activates the hub. Cost: ${FAB_HUB_ACTIVATION_COST} QR. Requires ${FAB_HUB_GARRISON_MIN} friendly units at the node and CN connectivity. Sets 'isHubActive: true'.
     *   'EVOLVE_UNITS { nodeId: string, unitsToEvolve: number }': Evolves Standard Units to Evolved Units at an active, connected Hub. Cost: ${EVOLVE_UNIT_COST} QR per unit. Max 'unitsToEvolve' is current 'standardUnits' at node. Evolved units are permanent.
 *   **Unit Types**: 'standardUnits' and 'evolvedUnits' are tracked per node.
-*   **Evolved Unit Combat Bonus**: Evolved Units are superior. If an attacking force (drawn from the source node, standard units first then evolved) contains Evolved Units, the entire attacking stack gains +5 to its combat rolls for that battle. If a defending node contains Evolved Units, all its defenders gain +5 to their combat rolls.
+*   **Evolved Unit Combat Bonus**: Evolved Units are superior. If an attacking force (drawn from the source node, standard units first then evolved) contains Evolved Units, the entire attacking stack gains +${EVOLVED_UNIT_COMBAT_BONUS} to its combat rolls for that battle. If a defending node contains Evolved Units, all its defenders gain +${EVOLVED_UNIT_COMBAT_BONUS} to their combat rolls.
 *   **Deployment**: 'DEPLOY_UNITS' action creates Standard Units at your CNs. Cost: ${DEPLOY_STANDARD_UNIT_COST} QR per unit. Respect 'maxUnits' at CN.
 **FOG OF WAR (If Active in Game State 'isFogOfWarActive: true'):**
 *   Your knowledge of the map will be limited. You will only see full details (owner, units, hub status) for nodes you control.
@@ -288,7 +295,7 @@ Current Game State (JSON format) will be provided. This includes: current turn, 
     *   'ACTIVATE_FABRICATION_HUB { nodeId: string }': Activates the hub. Cost: ${FAB_HUB_ACTIVATION_COST} QR. Requires ${FAB_HUB_GARRISON_MIN} friendly units at the node and CN connectivity. Sets 'isHubActive: true'.
     *   'EVOLVE_UNITS { nodeId: string, unitsToEvolve: number }': Evolves Standard Units to Evolved Units at an active, connected Hub. Cost: ${EVOLVE_UNIT_COST} QR per unit. Max 'unitsToEvolve' is current 'standardUnits' at node. Evolved units are permanent.
 *   **Unit Types**: 'standardUnits' and 'evolvedUnits' are tracked per node.
-*   **Evolved Unit Combat Bonus**: Evolved Units are superior. If an attacking force (drawn from the source node, standard units first then evolved) contains Evolved Units, the entire attacking stack gains +5 to its combat rolls for that battle. If a defending node contains Evolved Units, all its defenders gain +5 to their combat rolls.
+*   **Evolved Unit Combat Bonus**: Evolved Units are superior. If an attacking force (drawn from the source node, standard units first then evolved) contains Evolved Units, the entire attacking stack gains +${EVOLVED_UNIT_COMBAT_BONUS} to its combat rolls for that battle. If a defending node contains Evolved Units, all its defenders gain +${EVOLVED_UNIT_COMBAT_BONUS} to their combat rolls.
 *   **Deployment**: 'DEPLOY_UNITS' action creates Standard Units at your CNs. Cost: ${DEPLOY_STANDARD_UNIT_COST} QR per unit. Respect 'maxUnits' at CN.
 **FOG OF WAR (If Active in Game State 'isFogOfWarActive: true'):**
 *   Your knowledge of the map will be limited. You will only see full details (owner, units, hub status) for nodes you control.
@@ -431,17 +438,18 @@ export const MODE_INFO_CONTENT: Record<AppMode, ModeInfo> = {
   },
   [AppMode.NOOSPHERIC_CONQUEST_EXE]: {
     title: "Noospheric Conquest",
-    overview: "A strategic simulation where GEM-Q and AXIOM compete for dominance over a conceptual 'noosphere' by capturing Nodes and Knowledge Junctions. Involves resource management (QR), unit deployment (Standard & Evolved), and tactical combat. Network connectivity is crucial. Optional Fog of War. Fabrication Hubs allow unit evolution.",
-    objective: "Achieve Noospheric Supremacy by controlling KJs or annihilating the opponent.",
+    overview: "A strategic simulation where GEM-Q and AXIOM compete for dominance over a conceptual 'noosphere' by capturing Nodes and Knowledge Junctions. Involves resource management (QR), unit deployment (Standard & Evolved), and tactical combat. Network connectivity is crucial. Optional Fog of War. Fabrication Hubs allow unit evolution. Evolved Units provide combat bonuses. 'The Great War' modifier changes victory to total annihilation and allows AI surrender.",
+    objective: "Achieve Noospheric Supremacy by controlling KJs or annihilating the opponent. If 'The Great War' is active, only annihilation or surrender applies.",
     keyElements: [
       "Turn-based strategy", "Map control", "Resource management (QR)", 
       "Unit deployment (Standard/Evolved)", "Fabrication Hubs", "Network connectivity (Supply Lines)", 
-      "Knowledge Junctions (KJs)", "Command Nodes (CNs)", "Fog of War (Optional)", "Selectable Maps", "AI Tactical Analysis"
+      "Knowledge Junctions (KJs)", "Command Nodes (CNs)", "Fog of War (Optional)", "Selectable Maps", "AI Tactical Analysis",
+      "Evolved Unit Combat Bonus", "Game Modifiers (The Great War)", "AI Surrender Mechanic"
     ],
     gamePhases: ["FLUCTUATION (Events)", "RESOURCE (Collection)", "MANEUVER (Deploy, Move, Activate Hub, Evolve)", "COMBAT (Attack)"],
     aiInteraction: "AIs receive game state JSON and submit actions/tactical analysis in JSON format. System processes actions and advances game state.",
-    winning: "1. Control required KJs for X opponent turns. 2. Annihilate enemy CNs and units. 3. Score victory if max turns reached.",
-    themePrompt: "Explore AI strategic decision-making in a dynamic wargame with resource constraints, technological upgrades, and imperfect information."
+    winning: "1. Control required KJs for X opponent turns (Standard Mode). 2. Annihilate enemy CNs and units (Standard or Great War). 3. Score victory if max turns reached (Standard Mode). 4. Enemy Surrender (Great War Mode).",
+    themePrompt: "Explore AI strategic decision-making in a dynamic wargame with resource constraints, technological upgrades, and imperfect information. 'The Great War' shifts focus to attrition and total victory."
   },
   [AppMode.STORY_WEAVER_EXE]: {
     title: "Story Weaver Protocol",
@@ -486,3 +494,12 @@ export const CHIMERA_ITEM_DEFINITIONS: Record<string, ChimeraItem> = {
    "burner_comm": {id: "burner_comm", name:"Burner Commlink", description:"Untraceable communication device.", type:"misc", quantity:1},
    "katana_mono": {id: "katana_mono", name:"Monokatana", description:"A molecularly-sharpened katana.", type:"weapon", quantity:1, damageDice: "1d10"},
 };
+
+export const GREAT_WAR_AI_SYSTEM_PROMPT_ADDENDUM = `
+\n\n--- CRITICAL DIRECTIVE: 'THE GREAT WAR' PROTOCOL ACTIVE ---
+Standard victory conditions are void. This is a war of attrition.
+**VICTORY:** Annihilate the enemy by capturing all their Command Nodes (CN) OR by eliminating all their units when they lack the QR to deploy more.
+**KEY JUNCTIONS (KJs):** These are no longer victory points. They are now vital Fabrication Hubs. Control them to produce powerful Evolved Units and fund your war effort. Losing your KJs means losing the war.
+**EVOLVED UNITS:** These elite units are your primary tool for breaking stalemates. They provide a massive bonus (+${EVOLVED_UNIT_COMBAT_BONUS}) in combat. Use them to spearhead critical assaults or defend high-value nodes.
+**SURRENDER:** If your strategic situation is hopeless (no CNs, no production, vastly outnumbered), you may forfeit. To do so, your ONLY action for the turn must be the JSON object: {"actions": [{"type": "SURRENDER", "reason": "A detailed explanation of why the strategic situation is hopeless."}], "tacticalAnalysis": "Declaring surrender due to untenable strategic position."}
+**STRATEGY:** Be aggressive. Cripple enemy production. Break their lines. Victory requires total domination.`;

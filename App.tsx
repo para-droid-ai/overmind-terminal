@@ -1,18 +1,19 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { GoogleGenAI, Chat, Content, Part, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, Chat, Content, Part, GenerateContentResponse, LiveMusicSession, LiveMusicServerMessage, Scale } from "@google/genai";
 import MatrixBackground from './components/MatrixBackground';
 import TerminalWindow from './components/TerminalWindow';
 import ControlsPanel from './components/ControlsPanel';
 import { ChessModeContainer } from './components/chess/ChessModeContainer'; 
-import { NoosphericConquestContainer } from './components/noospheric/NoosphericConquestContainer'; 
+import NoosphericConquestContainer from './components/noospheric/NoosphericConquestContainer'; 
 import StoryWeaverModeContainer from './components/story_weaver/StoryWeaverModeContainer';
 import ChimeraModeContainer from './components/chimera/ChimeraModeContainer';
 import InfoModal from './components/InfoModal';
 import {
   AIPersona, MatrixSettings, ChatMessage, ImageSnapshot, StorySeed, StoryOption,
   ConversationBackup, AppMode, ModeStartMessageSeed, InterventionTarget, ThemeName, PlayerColor, SenderName,
-  NoosphericGameState, NoosphericMapType, ChimeraGameState, StoryWeaverModeContainerProps, ChimeraModeContainerProps
+  NoosphericGameState, NoosphericMapType, ChimeraGameState, StoryWeaverModeContainerProps, ChimeraModeContainerProps,
+  LyriaPrompt, LiveMusicGenerationConfig, LyriaPlaybackState, LyriaSessionBackup
 } from './types';
 import {
   DEFAULT_MATRIX_SPEED, AI1_NAME, AI2_NAME, STORY_WEAVER_SENDER_NAME,
@@ -30,7 +31,8 @@ import {
   CHIMERA_DM_SENDER_NAME, CHIMERA_PLAYER_SENDER_NAME, AVAILABLE_MODELS, CHIMERA_FACILITATOR_PROMPT_MESSAGE,
   GEM_Q_INITIATION_PROMPT, MAX_TURN_CYCLES, NOOSPHERIC_CONQUEST_EXE_MODE_START_MESSAGES,
   STORY_GENRES, STORY_CHARACTERS, STORY_SETTINGS, STORY_CONFLICTS_OR_ITEMS, STORY_KEYWORDS,
-  STORY_OPTION_GENERATOR_SYSTEM_PROMPT, STORY_WEAVER_AI_SYSTEM_PROMPT
+  STORY_OPTION_GENERATOR_SYSTEM_PROMPT, STORY_WEAVER_AI_SYSTEM_PROMPT,
+  MAX_LYRIA_PROMPTS, LYRIA_PROMPT_COLORS, LYRIA_MODEL_NAME
 } from './constants';
 import { INITIAL_BOARD_FEN, fenToBoard } from './utils/chessLogic';
 
@@ -38,6 +40,79 @@ const IMAGE_GEN_COMMAND_REGEX = /\[GENERATE_IMAGE:\s*([^\]]+)\]/gim;
 const CUSTOM_API_KEY_STORAGE_KEY = 'overmind_custom_gemini_api_key';
 
 type ApiKeySource = 'custom' | 'environment' | 'missing';
+
+
+// Utilities (can be moved to a separate file)
+function decodeBase64(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeLyriaAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number = 48000,
+  numChannels: number = 2
+): Promise<AudioBuffer> {
+  console.log('[Lyria] Decoding audio data chunk, length:', data.length);
+  const buffer = ctx.createBuffer(
+    numChannels,
+    data.length / 2 / numChannels,
+    sampleRate,
+  );
+
+  const dataInt16 = new Int16Array(data.buffer);
+  const l = dataInt16.length;
+  const dataFloat32 = new Float32Array(l);
+  for (let i = 0; i < l; i++) {
+    dataFloat32[i] = dataInt16[i] / 32768.0;
+  }
+
+  if (numChannels === 0) { // Should be numChannels === 1 based on Lyria docs for mono
+    buffer.copyToChannel(dataFloat32, 0);
+  } else { 
+    for (let i = 0; i < numChannels; i++) {
+      const channelData = new Float32Array(dataFloat32.length / numChannels);
+      for (let j = 0; j < channelData.length; j++) {
+        channelData[j] = dataFloat32[j * numChannels + i];
+      }
+      buffer.copyToChannel(channelData, i);
+    }
+  }
+  console.log('[Lyria] Audio data decoded into AudioBuffer.');
+  return buffer;
+}
+
+function throttle<T extends (...args: any[]) => any>(func: T, delay: number): T {
+  let lastCall = 0;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  return ((...args: Parameters<T>): ReturnType<T> | undefined => {
+    const now = Date.now();
+    const remaining = delay - (now - lastCall);
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    if (remaining <= 0) {
+      lastCall = now;
+      return func(...args);
+    } else {
+      timeoutId = setTimeout(() => {
+        lastCall = Date.now();
+        timeoutId = null;
+        func(...args);
+      }, remaining);
+    }
+  }) as T;
+}
+
 
 const App: React.FC = () => {
   const [activeTheme, setActiveTheme] = useState<ThemeName>('terminal');
@@ -123,13 +198,33 @@ const App: React.FC = () => {
   const queuedInterventionForAI1Ref = useRef<string | null>(null);
   const queuedInterventionForAI2Ref = useRef<string | null>(null);
 
-  const genAI = useRef<GoogleGenAI | null>(null);
+  const genAI = useRef<GoogleGenAI | null>(null); // For general API calls
+  const lyriaAiInstanceRef = useRef<GoogleGenAI | null>(null); // Specific for Lyria with v1alpha
+
   const genAIInstanceInitialized = useRef(false);
   const wasAwaitingUserInputRef = useRef(false);
   const propBasedGameLoadRef = useRef(false);
 
   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
   const [isEmergencyStopActive, setIsEmergencyStopActive] = useState(false);
+
+  // --- Lyria State (Lifted from ControlsPanel) ---
+  const [isLyriaModalOpen, setIsLyriaModalOpen] = useState(false); 
+  const [isLyriaSaveLoadModalOpen, setIsLyriaSaveLoadModalOpen] = useState(false);
+  const [lyriaPrompts, setLyriaPrompts] = useState<LyriaPrompt[]>([]);
+  const [lyriaConfig, setLyriaConfig] = useState<LiveMusicGenerationConfig>({ temperature: 1.1, topK: 40, guidance: 4.0 });
+  const [lyriaPlaybackState, setLyriaPlaybackState] = useState<LyriaPlaybackState>('stopped');
+  const lyriaSessionRef = useRef<LiveMusicSession | null>(null);
+  const lyriaSessionErrorRef = useRef<boolean>(false);
+  const lyriaAudioContextRef = useRef<AudioContext | null>(null);
+  const lyriaOutputNodeRef = useRef<GainNode | null>(null);
+  const lyriaNextChunkStartTimeRef = useRef<number>(0);
+  const [lyriaStatusMessage, setLyriaStatusMessage] = useState<string>("Ready.");
+  const presetPromptAddedRef = useRef(false);
+  const lyriaBufferTime = 2; // seconds
+
+  // --- End Lyria State ---
+
 
   useEffect(() => {
     const storedKey = localStorage.getItem(CUSTOM_API_KEY_STORAGE_KEY);
@@ -201,6 +296,357 @@ const App: React.FC = () => {
     
     return newMessage.id;
   }, [currentMode, globalSelectedModelId]);
+
+  // --- Lyria Functions (Moved from ControlsPanel) ---
+  const connectToLyriaSession = useCallback(async () => {
+    if (!lyriaAiInstanceRef.current) {
+        setLyriaStatusMessage("Error: Lyria AI not initialized (check API key).");
+        setLyriaPlaybackState('error');
+        lyriaSessionErrorRef.current = true;
+        return;
+    }
+    
+    setLyriaStatusMessage("Connecting to Lyria session...");
+    lyriaSessionErrorRef.current = false;
+
+    if (!lyriaAudioContextRef.current) {
+      lyriaAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
+    }
+    if (lyriaAudioContextRef.current.state === 'suspended') {
+      await lyriaAudioContextRef.current.resume();
+    }
+    if (!lyriaOutputNodeRef.current && lyriaAudioContextRef.current) {
+        lyriaOutputNodeRef.current = lyriaAudioContextRef.current.createGain();
+        lyriaOutputNodeRef.current.connect(lyriaAudioContextRef.current.destination);
+    }
+
+    try {
+      lyriaSessionRef.current = await lyriaAiInstanceRef.current.live.music.connect({
+        model: LYRIA_MODEL_NAME,
+        callbacks: {
+          onmessage: async (e: LiveMusicServerMessage) => {
+            if (e.setupComplete) {
+                setLyriaStatusMessage("Lyria session connected.");
+                if (lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+                    try {
+                        await lyriaSessionRef.current.setMusicGenerationConfig({ musicGenerationConfig: lyriaConfig });
+                        if (lyriaPrompts.length > 0) {
+                            throttledSetLyriaPrompts();
+                        }
+                    } catch (configError: any) {
+                        setLyriaStatusMessage(`Error setting initial config: ${configError.message || "Unknown"}`);
+                        lyriaSessionErrorRef.current = true;
+                        setLyriaPlaybackState('error');
+                    }
+                }
+            }
+            if (e.serverContent?.audioChunks?.[0]?.data) {
+              setLyriaPlaybackState(currentLocalPlaybackState => {
+                if (currentLocalPlaybackState === 'paused' || currentLocalPlaybackState === 'stopped' || lyriaSessionErrorRef.current) {
+                  return currentLocalPlaybackState;
+                }
+                if (!lyriaAudioContextRef.current || !lyriaOutputNodeRef.current) {
+                  lyriaSessionErrorRef.current = true; 
+                  return 'error';
+                }
+                const audioData = decodeBase64(e.serverContent!.audioChunks![0].data);
+                decodeLyriaAudioData(audioData, lyriaAudioContextRef.current!).then(audioBuffer => {
+                  const source = lyriaAudioContextRef.current!.createBufferSource();
+                  source.buffer = audioBuffer;
+                  source.connect(lyriaOutputNodeRef.current!);
+                  const currentTime = lyriaAudioContextRef.current!.currentTime;
+                  let nextStartTime = lyriaNextChunkStartTimeRef.current;
+                   if (nextStartTime === 0 && (currentLocalPlaybackState === 'loading' || currentLocalPlaybackState === 'playing') && !lyriaSessionErrorRef.current ) { 
+                     nextStartTime = currentTime + lyriaBufferTime;
+                  }
+                  if (nextStartTime < currentTime) {
+                    setLyriaStatusMessage("Audio buffer underrun, reloading...");
+                    lyriaNextChunkStartTimeRef.current = currentTime; 
+                    nextStartTime = currentTime;
+                  }
+                  source.start(nextStartTime);
+                  lyriaNextChunkStartTimeRef.current = nextStartTime + audioBuffer.duration;
+                }).catch(decodeError => {
+                    setLyriaStatusMessage("Error: Could not decode audio.");
+                    lyriaSessionErrorRef.current = true;
+                    setLyriaPlaybackState('error'); 
+                });
+                if (currentLocalPlaybackState === 'loading' && !lyriaSessionErrorRef.current) {
+                   setLyriaStatusMessage("Music playing.");
+                   return 'playing';
+                }
+                return currentLocalPlaybackState;
+              });
+            } else if ((e as any).error) {
+                setLyriaStatusMessage(`Lyria Error: ${(e as any).error.message || 'Unknown server error'}`);
+                setLyriaPlaybackState('error');
+                lyriaSessionErrorRef.current = true;
+            }
+          },
+          onerror: (errEvent: Event) => {
+            setLyriaStatusMessage(`Lyria connection error: ${(errEvent as any).message || 'Unknown. Check console.'}`);
+            setLyriaPlaybackState('error');
+            lyriaSessionRef.current = null;
+            lyriaSessionErrorRef.current = true;
+          },
+          onclose: (closeEvent: CloseEvent) => {
+            setLyriaPlaybackState(prevStateAtClose => {
+                setLyriaStatusMessage("Lyria connection closed.");
+                const newState = prevStateAtClose === 'error' ? 'error' : 'stopped';
+                if (newState === 'stopped') lyriaNextChunkStartTimeRef.current = 0; 
+                lyriaSessionRef.current = null;
+                lyriaSessionErrorRef.current = true; 
+                return newState;
+            });
+          },
+        },
+      });
+    } catch (error: any) {
+      setLyriaStatusMessage(`Failed to connect: ${error.message || "Unknown error"}`);
+      setLyriaPlaybackState('error');
+      lyriaSessionErrorRef.current = true;
+    }
+  }, [lyriaConfig, lyriaPrompts]); // Removed throttledSetLyriaPrompts, it will be called via useEffect on lyriaPrompts
+
+  const throttledSetLyriaPrompts = useCallback(
+    throttle(async () => {
+      if (lyriaSessionRef.current && !lyriaSessionErrorRef.current && lyriaPlaybackState !== 'error') {
+        const promptsToSend = lyriaPrompts.filter(p => p.text.trim() && p.weight > 0);
+        const wasPlaying = lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading';
+        if (wasPlaying) {
+          lyriaSessionRef.current?.pause();
+          setLyriaStatusMessage("Applying prompt changes...");
+          await new Promise(resolve => setTimeout(resolve, 50)); 
+        }
+        try {
+          await lyriaSessionRef.current.setWeightedPrompts({ weightedPrompts: promptsToSend });
+          setLyriaStatusMessage("Prompts updated.");
+          if (wasPlaying && lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+            lyriaSessionRef.current?.play();
+            setLyriaStatusMessage("Music playing with new prompts.");
+          }
+        } catch (e: any) {
+          setLyriaStatusMessage(`Error updating prompts: ${e.message || "Unknown"}`);
+          lyriaSessionErrorRef.current = true;
+          setLyriaPlaybackState('error');
+        }
+      }
+    }, 300),
+    [lyriaPrompts, lyriaPlaybackState] 
+  );
+
+  const throttledSetLyriaConfig = useCallback(
+    throttle(async () => {
+        if (lyriaSessionRef.current && !lyriaSessionErrorRef.current && lyriaPlaybackState !== 'error') {
+            const wasPlaying = lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading';
+            if (wasPlaying) {
+                lyriaSessionRef.current?.pause();
+                setLyriaStatusMessage("Applying config changes...");
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            try {
+                await lyriaSessionRef.current.setMusicGenerationConfig({ musicGenerationConfig: lyriaConfig });
+                setLyriaStatusMessage("Music config updated.");
+                 if (wasPlaying && lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+                    lyriaSessionRef.current?.play();
+                    setLyriaStatusMessage("Music playing with new config.");
+                }
+            } catch (e: any) {
+                setLyriaStatusMessage(`Error updating config: ${e.message || "Unknown"}`);
+                lyriaSessionErrorRef.current = true;
+                setLyriaPlaybackState('error');
+            }
+        }
+    }, 300),
+    [lyriaConfig, lyriaPlaybackState]
+  );
+  
+  useEffect(() => {
+    if (lyriaSessionRef.current && !lyriaSessionErrorRef.current && lyriaPlaybackState !== 'error') {
+      throttledSetLyriaPrompts();
+    }
+  }, [lyriaPrompts, throttledSetLyriaPrompts, lyriaPlaybackState]); // Added lyriaPlaybackState dependency
+
+  useEffect(() => {
+    if (lyriaSessionRef.current && !lyriaSessionErrorRef.current && lyriaPlaybackState !== 'error') {
+        throttledSetLyriaConfig();
+    }
+  }, [lyriaConfig, throttledSetLyriaConfig, lyriaPlaybackState]); // Added lyriaPlaybackState dependency
+
+  const handleLyriaPlayPause = useCallback(async () => {
+    if (isEmergencyStopActive) {
+      setLyriaStatusMessage("Lyria is disabled due to Emergency Stop.");
+      return;
+    }
+    if (!lyriaAiInstanceRef.current) {
+        setLyriaStatusMessage("Error: Lyria AI not initialized.");
+        return;
+    }
+    if (lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading') {
+      lyriaSessionRef.current?.pause();
+      setLyriaPlaybackState('paused');
+      setLyriaStatusMessage("Music paused.");
+      if (lyriaOutputNodeRef.current && lyriaAudioContextRef.current) {
+          lyriaOutputNodeRef.current.gain.linearRampToValueAtTime(0, lyriaAudioContextRef.current.currentTime + 0.1);
+      }
+      lyriaNextChunkStartTimeRef.current = 0;
+    } else { 
+      setLyriaPlaybackState('loading');
+      setLyriaStatusMessage("Attempting to play/resume music...");
+      if (!lyriaSessionRef.current || lyriaSessionErrorRef.current) {
+        await connectToLyriaSession(); 
+         if (lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+            lyriaSessionRef.current.play();
+             if (lyriaAudioContextRef.current && lyriaAudioContextRef.current.state === 'suspended') {
+              await lyriaAudioContextRef.current.resume();
+            }
+            if (lyriaOutputNodeRef.current && lyriaAudioContextRef.current) {
+                lyriaOutputNodeRef.current.gain.linearRampToValueAtTime(1, lyriaAudioContextRef.current.currentTime + 0.1);
+            }
+         } else if (!lyriaSessionRef.current || lyriaSessionErrorRef.current) {
+            setLyriaPlaybackState('error'); // connectToLyriaSession will set error message
+         }
+      } else if (lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+        lyriaSessionRef.current.play(); 
+        if (lyriaAudioContextRef.current && lyriaAudioContextRef.current.state === 'suspended') {
+          await lyriaAudioContextRef.current.resume();
+        }
+        if (lyriaOutputNodeRef.current && lyriaAudioContextRef.current) {
+            lyriaOutputNodeRef.current.gain.linearRampToValueAtTime(1, lyriaAudioContextRef.current.currentTime + 0.1);
+        }
+      }
+    }
+  }, [lyriaPlaybackState, connectToLyriaSession, isEmergencyStopActive]);
+
+  const handleLyriaResetContext = async () => {
+    if (!lyriaSessionRef.current) {
+        setLyriaStatusMessage("No active Lyria session to reset.");
+        return;
+    }
+    const wasPlayingOrLoading = lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading';
+    lyriaSessionRef.current?.pause();
+    setLyriaPlaybackState('paused'); 
+    setLyriaStatusMessage("Resetting Lyria context...");
+    lyriaNextChunkStartTimeRef.current = 0; 
+    lyriaSessionRef.current?.resetContext();
+    const defaultConfig = { temperature: 1.1, topK: 40, guidance: 4.0 };
+    setLyriaConfig(defaultConfig);
+    if (lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+      try {
+        await lyriaSessionRef.current.setMusicGenerationConfig({ musicGenerationConfig: defaultConfig });
+      } catch (e) { console.error("[Lyria] Error applying default config during reset:", e); }
+    }
+    if (lyriaPrompts.length > 0 && lyriaSessionRef.current && !lyriaSessionErrorRef.current) {
+      const promptsToSend = lyriaPrompts.filter(p => p.text.trim() && p.weight > 0);
+      try {
+        await lyriaSessionRef.current.setWeightedPrompts({ weightedPrompts: promptsToSend });
+      } catch (e) { console.error("[Lyria] Error re-applying prompts after reset:", e); }
+    }
+    setLyriaStatusMessage("Lyria context reset.");
+    if (wasPlayingOrLoading && lyriaSessionRef.current && !lyriaSessionErrorRef.current && !isEmergencyStopActive) {
+        setLyriaPlaybackState('loading');
+        lyriaSessionRef.current.play(); 
+        if (lyriaAudioContextRef.current && lyriaAudioContextRef.current.state === 'suspended') {
+            lyriaAudioContextRef.current.resume();
+        }
+        if (lyriaOutputNodeRef.current && lyriaAudioContextRef.current) {
+            lyriaOutputNodeRef.current.gain.linearRampToValueAtTime(1, lyriaAudioContextRef.current.currentTime + 0.1);
+        }
+    } else if (wasPlayingOrLoading && (!lyriaSessionRef.current || lyriaSessionErrorRef.current || isEmergencyStopActive)) {
+        setLyriaPlaybackState('stopped');
+    }
+  };
+
+  const handleAddLyriaPrompt = () => {
+    if (lyriaPrompts.length < MAX_LYRIA_PROMPTS) {
+      const newPromptId = `lyria-prompt-${Date.now()}`;
+      const usedColors = lyriaPrompts.map(p => p.color);
+      const availableColors = LYRIA_PROMPT_COLORS.filter(c => !usedColors.includes(c));
+      const newColor = availableColors.length > 0 ? availableColors[0] : LYRIA_PROMPT_COLORS[lyriaPrompts.length % LYRIA_PROMPT_COLORS.length];
+      setLyriaPrompts([...lyriaPrompts, { promptId: newPromptId, text: "", weight: 1.0, color: newColor }]);
+    } else {
+      setLyriaStatusMessage(`Max ${MAX_LYRIA_PROMPTS} prompts reached.`);
+    }
+  };
+
+  const handleRemoveLyriaPrompt = (id: string) => setLyriaPrompts(lyriaPrompts.filter(p => p.promptId !== id));
+  const handleLyriaPromptTextChange = (id: string, text: string) => setLyriaPrompts(lyriaPrompts.map(p => p.promptId === id ? { ...p, text } : p));
+  const handleLyriaPromptWeightChange = (id: string, weight: number) => setLyriaPrompts(lyriaPrompts.map(p => p.promptId === id ? { ...p, weight } : p));
+  const handleLyriaConfigChange = (key: keyof LiveMusicGenerationConfig, value: any) => {
+    let processedValue = value;
+    if (key === 'temperature' || key === 'guidance') processedValue = parseFloat(value);
+    else if (key === 'topK' || key === 'seed' || key === 'bpm') processedValue = value === '' || value === null ? undefined : parseInt(value, 10);
+    if (isNaN(processedValue as number) && (key === 'topK' || key === 'seed' || key === 'bpm')) processedValue = undefined;
+    setLyriaConfig(prev => ({ ...prev, [key]: processedValue }));
+  };
+  
+  const handleSaveLyriaSettings = () => {
+    const backupData: LyriaSessionBackup = { version: "1.0.0", timestamp: new Date().toISOString(), prompts: lyriaPrompts, config: lyriaConfig };
+    const jsonData = JSON.stringify(backupData, null, 2);
+    const blob = new Blob([jsonData], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.download = `lyria_settings_${new Date().toISOString().replace(/:/g, '-')}.json`;
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setLyriaStatusMessage("Lyria settings saved.");
+  };
+
+  const handleLoadLyriaSettings = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const result = e.target?.result as string;
+          const backupData = JSON.parse(result) as LyriaSessionBackup;
+          if (backupData.prompts && Array.isArray(backupData.prompts) && backupData.config && typeof backupData.config === 'object') {
+            setLyriaPrompts(backupData.prompts.slice(0, MAX_LYRIA_PROMPTS));
+            setLyriaConfig(backupData.config);
+            setLyriaStatusMessage("Lyria settings loaded. Applying...");
+            // Effects will trigger throttled updates
+          } else { throw new Error("Invalid Lyria settings file format."); }
+        } catch (error: any) { setLyriaStatusMessage(`Error loading settings: ${error.message || 'Unknown'}`); }
+      };
+      reader.readAsText(file);
+      event.target.value = ''; 
+    }
+  };
+  // --- End Lyria Functions ---
+
+  useEffect(() => { // Lyria AI Instance Initialization
+    let keyToUse: string | undefined = undefined;
+    if (activeApiKeySource === 'custom' && userDefinedApiKey) keyToUse = userDefinedApiKey;
+    else if (activeApiKeySource === 'environment' && process.env.API_KEY) keyToUse = process.env.API_KEY;
+    
+    if (keyToUse && !apiKeyMissingError) {
+        if (!lyriaAiInstanceRef.current) { 
+            try {
+                lyriaAiInstanceRef.current = new GoogleGenAI({ apiKey: keyToUse, apiVersion: 'v1alpha' });
+                setLyriaStatusMessage("Lyria AI Ready.");
+            } catch (e) {
+                console.error("[Lyria] Failed to initialize GoogleGenAI for Lyria:", e);
+                setLyriaStatusMessage("Error: Failed to init Lyria AI.");
+                lyriaAiInstanceRef.current = null;
+            }
+        }
+    } else {
+        lyriaAiInstanceRef.current = null;
+        if (isLyriaModalOpen) setLyriaStatusMessage("Error: Lyria requires an active API key.");
+    }
+  }, [activeApiKeySource, userDefinedApiKey, apiKeyMissingError, isLyriaModalOpen]);
+
+  useEffect(() => { // Lyria default prompt
+    if (isLyriaModalOpen && !presetPromptAddedRef.current && lyriaPrompts.length === 0 && lyriaAiInstanceRef.current) {
+      const defaultPromptId = `lyria-prompt-default-${Date.now()}`;
+      setLyriaPrompts([{ promptId: defaultPromptId, text: "post-rock full band", weight: 1.0, color: LYRIA_PROMPT_COLORS[0] || "#9900ff" }]);
+      presetPromptAddedRef.current = true;
+    }
+    if (!isLyriaModalOpen) presetPromptAddedRef.current = false; 
+  }, [isLyriaModalOpen, lyriaPrompts]);
 
   const initializeAI = useCallback(async (
     mode: AppMode,
@@ -795,6 +1241,9 @@ const App: React.FC = () => {
     setStoryContinuationOptions(fromBackup && mode === AppMode.STORY_WEAVER_EXE ? (backupData?.storyContinuationOptions || []) : []);
     setIsAwaitingStoryContinuationChoice(fromBackup && mode === AppMode.STORY_WEAVER_EXE ? (backupData?.isAwaitingStoryContinuationChoice || false) : false);
 
+    if (backupData?.lyriaPrompts) setLyriaPrompts(backupData.lyriaPrompts);
+    if (backupData?.lyriaConfig) setLyriaConfig(backupData.lyriaConfig);
+
 
     const ai1History = backupData?.personas.ai1.initialInternalHistory || [];
     const ai2History = backupData?.personas.ai2?.initialInternalHistory || [];
@@ -904,7 +1353,7 @@ const App: React.FC = () => {
         }
     }
     setIsLoading(false);
-  }, [addMessageToHistory, initializeAI, globalSelectedModelId, conversationHistory, generateStorySeeds, generateContinuationOptions, selectedStorySeed]);
+  }, [addMessageToHistory, initializeAI, globalSelectedModelId, conversationHistory, generateStorySeeds, generateContinuationOptions, selectedStorySeed, lyriaPrompts, lyriaConfig]);
 
 
   const handleSaveCustomApiKey = useCallback((key: string) => {
@@ -935,6 +1384,11 @@ const App: React.FC = () => {
         setIsLoading(false);
         setActiveAINameForLoading(null);
         setCurrentTypingMessageId(null);
+        if (lyriaSessionRef.current && (lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading')) {
+          lyriaSessionRef.current.pause();
+          setLyriaPlaybackState('paused');
+          setLyriaStatusMessage("Music paused due to Emergency Stop.");
+        }
       } else {
         addMessageToHistory(SYSTEM_SENDER_NAME, "AI Calls Resumed. (Manual interaction may be needed to continue specific modes)", 'text-[var(--color-info)]', false, false);
         
@@ -951,7 +1405,7 @@ const App: React.FC = () => {
       }
       return newState;
     });
-  }, [addMessageToHistory, isLoading, isAwaitingUserInput, currentMode, selectedStorySeed, isAwaitingSeedChoice, isAwaitingStoryContinuationChoice, generateContinuationOptions, conversationHistory]);
+  }, [addMessageToHistory, isLoading, isAwaitingUserInput, currentMode, selectedStorySeed, isAwaitingSeedChoice, isAwaitingStoryContinuationChoice, generateContinuationOptions, conversationHistory, lyriaPlaybackState]);
 
   const handleGlobalModelChange = useCallback((modelId: string) => {
     setGlobalSelectedModelId(modelId);
@@ -1077,6 +1531,8 @@ const App: React.FC = () => {
       themeName: activeTheme,
       typingSpeedMs: typingSpeedMs,
       globalSelectedModelId: globalSelectedModelId,
+      lyriaPrompts: lyriaPrompts,
+      lyriaConfig: lyriaConfig,
     };
 
     const jsonData = JSON.stringify(backupData, null, 2);
@@ -1094,7 +1550,8 @@ const App: React.FC = () => {
   }, [
     conversationHistory, imageSnapshots, selectedStorySeed, storyContinuationOptions,
     isAwaitingSeedChoice, isAwaitingStoryContinuationChoice, lastGeneratedImageForStoryWeaver,
-    storyWeaverTurnCount, activeTheme, typingSpeedMs, globalSelectedModelId, addMessageToHistory
+    storyWeaverTurnCount, activeTheme, typingSpeedMs, globalSelectedModelId, addMessageToHistory,
+    lyriaPrompts, lyriaConfig
   ]);
 
   const handleLoadChat = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1106,7 +1563,6 @@ const App: React.FC = () => {
           const result = e.target?.result as string;
           const backupData = JSON.parse(result) as ConversationBackup;
           
-          // Basic validation
           if (!backupData.version || !backupData.mode || !backupData.conversationHistory) {
             throw new Error("Invalid backup file format.");
           }
@@ -1120,7 +1576,7 @@ const App: React.FC = () => {
         }
       };
       reader.readAsText(file);
-      event.target.value = ''; // Reset file input
+      event.target.value = ''; 
     }
   };
   
@@ -1204,6 +1660,9 @@ const App: React.FC = () => {
     makeAiRespond, forceTurnCheckToken, 
   ]);
 
+  // Helper to determine if Lyria is ready (excluding emergency stop)
+  const isLyriaModuleReady = !!lyriaAiInstanceRef.current && !lyriaSessionErrorRef.current;
+
 
   const renderTerminalForDefaultModes = () => (
     <TerminalWindow
@@ -1253,6 +1712,10 @@ const App: React.FC = () => {
             isAiReadyForChessFromApp={isAiReadyForChess}
             appInitializationError={initializationError}
             onOpenInfoModal={() => setIsInfoModalOpen(true)}
+            lyriaPlaybackState={lyriaPlaybackState}
+            onLyriaPlayPause={handleLyriaPlayPause}
+            isLyriaReady={isLyriaModuleReady}
+            isEmergencyStopActive={isEmergencyStopActive}
           />
         );
       case AppMode.NOOSPHERIC_CONQUEST_EXE:
@@ -1270,6 +1733,10 @@ const App: React.FC = () => {
             isAiReadyForNoosphericFromApp={isAiReadyForNoospheric}
             appInitializationError={initializationError}
             onOpenInfoModal={() => setIsInfoModalOpen(true)}
+            lyriaPlaybackState={lyriaPlaybackState}
+            onLyriaPlayPause={handleLyriaPlayPause}
+            isLyriaReady={isLyriaModuleReady}
+            isEmergencyStopActive={isEmergencyStopActive}
           />
         );
       case AppMode.STORY_WEAVER_EXE:
@@ -1376,6 +1843,25 @@ const App: React.FC = () => {
                     activeApiKeySource={activeApiKeySource}
                     initialCustomKeyValue={userDefinedApiKey || ""}
                     apiKeyMissingError={apiKeyMissingError}
+                    // Lyria props
+                    lyriaPrompts={lyriaPrompts}
+                    lyriaConfig={lyriaConfig}
+                    lyriaPlaybackState={lyriaPlaybackState}
+                    lyriaStatusMessage={lyriaStatusMessage}
+                    isLyriaModalOpen={isLyriaModalOpen}
+                    onToggleLyriaModal={setIsLyriaModalOpen}
+                    isLyriaSaveLoadModalOpen={isLyriaSaveLoadModalOpen}
+                    onToggleLyriaSaveLoadModal={setIsLyriaSaveLoadModalOpen}
+                    onAddLyriaPrompt={handleAddLyriaPrompt}
+                    onRemoveLyriaPrompt={handleRemoveLyriaPrompt}
+                    onLyriaPromptTextChange={handleLyriaPromptTextChange}
+                    onLyriaPromptWeightChange={handleLyriaPromptWeightChange}
+                    onLyriaConfigChange={handleLyriaConfigChange}
+                    onLyriaPlayPause={handleLyriaPlayPause}
+                    onLyriaResetContext={handleLyriaResetContext}
+                    isLyriaReady={isLyriaModuleReady}
+                    onSaveLyriaSettings={handleSaveLyriaSettings}
+                    onLoadLyriaSettings={handleLoadLyriaSettings}
                 />
              </>
          );
@@ -1437,6 +1923,25 @@ const App: React.FC = () => {
             activeApiKeySource={activeApiKeySource}
             initialCustomKeyValue={userDefinedApiKey || ""}
             apiKeyMissingError={apiKeyMissingError}
+            // Lyria props
+            lyriaPrompts={lyriaPrompts}
+            lyriaConfig={lyriaConfig}
+            lyriaPlaybackState={lyriaPlaybackState}
+            lyriaStatusMessage={lyriaStatusMessage}
+            isLyriaModalOpen={isLyriaModalOpen}
+            onToggleLyriaModal={setIsLyriaModalOpen}
+            isLyriaSaveLoadModalOpen={isLyriaSaveLoadModalOpen}
+            onToggleLyriaSaveLoadModal={setIsLyriaSaveLoadModalOpen}
+            onAddLyriaPrompt={handleAddLyriaPrompt}
+            onRemoveLyriaPrompt={handleRemoveLyriaPrompt}
+            onLyriaPromptTextChange={handleLyriaPromptTextChange}
+            onLyriaPromptWeightChange={handleLyriaPromptWeightChange}
+            onLyriaConfigChange={handleLyriaConfigChange}
+            onLyriaPlayPause={handleLyriaPlayPause}
+            onLyriaResetContext={handleLyriaResetContext}
+            isLyriaReady={isLyriaModuleReady}
+            onSaveLyriaSettings={handleSaveLyriaSettings}
+            onLoadLyriaSettings={handleLoadLyriaSettings}
           />
         </>
       );
@@ -1486,6 +1991,25 @@ const App: React.FC = () => {
               activeApiKeySource={activeApiKeySource}
               initialCustomKeyValue={userDefinedApiKey || ""}
               apiKeyMissingError={apiKeyMissingError}
+              // Lyria props
+              lyriaPrompts={lyriaPrompts}
+              lyriaConfig={lyriaConfig}
+              lyriaPlaybackState={lyriaPlaybackState}
+              lyriaStatusMessage={lyriaStatusMessage}
+              isLyriaModalOpen={isLyriaModalOpen}
+              onToggleLyriaModal={setIsLyriaModalOpen}
+              isLyriaSaveLoadModalOpen={isLyriaSaveLoadModalOpen}
+              onToggleLyriaSaveLoadModal={setIsLyriaSaveLoadModalOpen}
+              onAddLyriaPrompt={handleAddLyriaPrompt}
+              onRemoveLyriaPrompt={handleRemoveLyriaPrompt}
+              onLyriaPromptTextChange={handleLyriaPromptTextChange}
+              onLyriaPromptWeightChange={handleLyriaPromptWeightChange}
+              onLyriaConfigChange={handleLyriaConfigChange}
+              onLyriaPlayPause={handleLyriaPlayPause}
+              onLyriaResetContext={handleLyriaResetContext}
+              isLyriaReady={isLyriaModuleReady}
+              onSaveLyriaSettings={handleSaveLyriaSettings}
+              onLoadLyriaSettings={handleLoadLyriaSettings}
             />
           </>
         );
@@ -1501,7 +2025,7 @@ const App: React.FC = () => {
       {isInfoModalOpen && MODE_INFO_CONTENT[currentMode] && (
         <InfoModal modeInfo={MODE_INFO_CONTENT[currentMode]!} onClose={() => setIsInfoModalOpen(false)} />
       )}
-      <div id="app-version" data-version="1.10.0" className="hidden"></div>
+      <div id="app-version" data-version="1.11.0" className="hidden"></div>
       <div id="chess-mode-container-data" style={{ display: 'none' }}></div>
       <div id="noospheric-conquest-container-data" style={{ display: 'none' }}></div>
       <div id="chimera-mode-container-data" style={{ display: 'none' }}></div>

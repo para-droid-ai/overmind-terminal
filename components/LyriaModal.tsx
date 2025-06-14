@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { LyriaPrompt, LiveMusicGenerationConfig, LyriaPlaybackState } from '../types';
 import WeightSlider from './WeightSlider'; 
-import { MAX_LYRIA_PROMPTS, LYRIA_PROMPT_COLORS } from './ControlsPanel';
+import { MAX_LYRIA_PROMPTS, LYRIA_PROMPT_COLORS } from '../constants'; // Updated import path
 
 
 interface LyriaModalProps {
@@ -15,8 +15,7 @@ interface LyriaModalProps {
   onPromptTextChange: (id: string, text: string) => void;
   onPromptWeightChange: (id: string, weight: number) => void;
   onConfigChange: (key: keyof LiveMusicGenerationConfig, value: any) => void;
-  maxPrompts: typeof MAX_LYRIA_PROMPTS;
-  promptColors: typeof LYRIA_PROMPT_COLORS;
+  // maxPrompts and promptColors are now directly imported from constants if needed, or not used if App.tsx passes them
   statusMessage: string;
   onPlayPauseClick: () => void; 
   currentPlaybackState: LyriaPlaybackState; 
@@ -34,8 +33,6 @@ const LyriaModal: React.FC<LyriaModalProps> = ({
   onPromptTextChange,
   onPromptWeightChange,
   onConfigChange,
-  maxPrompts,
-  // promptColors, // Already imported via LYRIA_PROMPT_COLORS
   statusMessage,
   onPlayPauseClick,
   currentPlaybackState,
@@ -115,12 +112,12 @@ const LyriaModal: React.FC<LyriaModalProps> = ({
               </div>
             ))}
           </div>
-          {prompts.length < maxPrompts && (
+          {prompts.length < MAX_LYRIA_PROMPTS && (
             <button 
               onClick={onAddPrompt} 
               className="w-full text-xs py-1.5 px-3 bg-[var(--color-bg-button-secondary)] text-[var(--color-text-button-secondary)] rounded hover:bg-[var(--color-bg-button-secondary-hover)] focus-ring-accent"
             >
-              Add Music Prompt (Max: {maxPrompts})
+              Add Music Prompt (Max: {MAX_LYRIA_PROMPTS})
             </button>
           )}
 

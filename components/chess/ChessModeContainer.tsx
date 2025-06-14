@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Chat, GoogleGenAI, Part, GenerateContentResponse } from '@google/genai';
 import html2canvas from 'html2canvas';
-import { ChessBoardState, PlayerColor, UCIMove, PieceSymbol, AppMode, ThemeName, ChessGameRecord, ChessMoveDetail, ChessGameOutcome, ChessPiece, ChessSystemLogEntry } from '../../types';
+import { ChessBoardState, PlayerColor, UCIMove, PieceSymbol, AppMode, ThemeName, ChessGameRecord, ChessMoveDetail, ChessGameOutcome, ChessPiece, ChessSystemLogEntry, LyriaPlaybackState } from '../../types';
 import {
     AI1_NAME, AI2_NAME, CHESS_SIM_START_MESSAGE, SYSTEM_SENDER_NAME, THEMES, CHESS_STRATEGIES, MAX_CHESS_RETRY_ATTEMPTS, AVAILABLE_MODELS,
     OVERMIND_DATA_MASTER_SYSTEM_PROMPT, OVERMIND_DATA_MASTER_SENDER_NAME, GEMINI_MULTIMODAL_MODEL_FOR_ODM
@@ -32,6 +32,10 @@ interface ChessModeContainerProps {
   isAiReadyForChessFromApp: boolean;
   appInitializationError: string | null;
   onOpenInfoModal: () => void;
+  lyriaPlaybackState: LyriaPlaybackState;
+  onLyriaPlayPause: () => void;
+  isLyriaReady: boolean;
+  isEmergencyStopActive: boolean;
 }
 
 const formatDuration = (ms: number): string => {
@@ -61,6 +65,10 @@ export const ChessModeContainer: React.FC<ChessModeContainerProps> = ({
   isAiReadyForChessFromApp,
   appInitializationError,
   onOpenInfoModal,
+  lyriaPlaybackState,
+  onLyriaPlayPause,
+  isLyriaReady,
+  isEmergencyStopActive,
 }) => {
   const [currentFen, setCurrentFen] = useState<string>(initialFenProp || INITIAL_BOARD_FEN);
   const [boardState, setBoardState] = useState<ChessBoardState>(fenToBoard(currentFen).board);
@@ -915,6 +923,26 @@ export const ChessModeContainer: React.FC<ChessModeContainerProps> = ({
       <header className="w-full flex-shrink-0 p-2 mb-1 bg-[var(--color-bg-panel)] rounded-md shadow-md border-2 border-[var(--color-border-strong)] flex flex-col sm:flex-row justify-between items-center">
         <h1 className="text-md md:text-lg font-bold text-[var(--color-text-heading)] mb-2 sm:mb-0">AI vs AI Chess Simulation</h1>
         <div className="flex items-center space-x-1 sm:space-x-2">
+          <button
+            onClick={onLyriaPlayPause} 
+            disabled={!isLyriaReady || isEmergencyStopActive || (lyriaPlaybackState === 'error')}
+            className="p-1.5 bg-[var(--color-bg-button-primary)] rounded-full hover:bg-[var(--color-bg-button-primary-hover)] disabled:opacity-50 flex-shrink-0 focus-ring-accent"
+            title={lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading' ? "Pause Lyria Music" : "Play Lyria Music"}
+            aria-label={lyriaPlaybackState === 'playing' || lyriaPlaybackState === 'loading' ? "Pause Lyria Music" : "Play Lyria Music"}
+          >
+            {lyriaPlaybackState === 'loading' ? (
+                <svg className="w-4 h-4 text-[var(--color-text-button-primary)] animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            ) : lyriaPlaybackState === 'playing' ? (
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-[var(--color-text-button-primary)]">
+                  <path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z" />
+                </svg>
+            ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-[var(--color-text-button-primary)]"><path d="M6.3 2.841A1.5 1.5 0 0 0 4 4.11V15.89a1.5 1.5 0 0 0 2.3 1.269l9.344-5.89a1.5 1.5 0 0 0 0-2.538L6.3 2.84Z" /></svg>
+            )}
+          </button>
           <button onClick={() => handleNewGameRef.current()} disabled={isLoadingAI || isInvokingOvermind || !isOverallAiReady}
             className="px-2 py-1 bg-[var(--color-bg-button-primary)] text-[var(--color-text-button-primary)] rounded hover:bg-[var(--color-bg-button-primary-hover)] focus-ring-primary text-xs font-semibold disabled:opacity-50">
             New Game
