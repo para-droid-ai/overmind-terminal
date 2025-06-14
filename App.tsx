@@ -2018,7 +2018,11 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col md:flex-row bg-[var(--color-bg-page)] text-[var(--color-text-base)] overflow-hidden">
-      <MatrixBackground settings={matrixSettings} onFPSUpdate={setFps} />
+      <MatrixBackground
+        settings={matrixSettings}
+        onFPSUpdate={setFps}
+        isProcessing={isLoading} 
+      />
       <div className="relative flex flex-col md:flex-row flex-grow w-full h-full p-1 md:p-2 gap-1 md:gap-2 z-10">
         {renderAppContent()}
       </div>

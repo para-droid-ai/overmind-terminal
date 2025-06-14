@@ -6,7 +6,7 @@ export const KATAKANA_CHARS = "アァカサタナハマヤャラワガザダバ�
 export const ASCII_CHARS = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 export const ALPHANUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-export const DEFAULT_MATRIX_SPEED = 50;
+export const DEFAULT_MATRIX_SPEED = 75; // Changed from 50
 
 export const DEFAULT_TYPING_SPEED_MS = 20;
 export const MIN_TYPING_SPEED_MS = 5;

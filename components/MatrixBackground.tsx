@@ -6,9 +6,10 @@ import { KATAKANA_CHARS } from '../constants'; // Default to Katakana, can be ma
 interface MatrixBackgroundProps {
   settings: MatrixSettings;
   onFPSUpdate: (fps: number) => void;
+  isProcessing?: boolean; // --- FIX: Add this new prop ---
 }
 
-const MatrixBackground: React.FC<MatrixBackgroundProps> = ({ settings, onFPSUpdate }) => {
+const MatrixBackground: React.FC<MatrixBackgroundProps> = ({ settings, onFPSUpdate, isProcessing = false }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameId = useRef<number>(0);
   const lastUpdateTimeRef = useRef<number>(0);
@@ -70,7 +71,12 @@ const MatrixBackground: React.FC<MatrixBackgroundProps> = ({ settings, onFPSUpda
           fpsDataRef.current.lastUpdateTime = now;
         }
 
-        if (timestamp - lastUpdateTimeRef.current > settings.speed) {
+        // --- THE FIX: Dynamically throttle speed based on app processing state ---
+        // If the app is busy, slow the matrix to a crawl (1 frame/sec). Otherwise, use user setting.
+        const currentSpeed = isProcessing ? 1000 : settings.speed;
+        // --- END OF FIX ---
+
+        if (timestamp - lastUpdateTimeRef.current > currentSpeed) { // Use the new dynamic speed variable
           draw(ctx, canvas, columns, drops);
           lastUpdateTimeRef.current = timestamp;
         }
@@ -99,7 +105,7 @@ const MatrixBackground: React.FC<MatrixBackgroundProps> = ({ settings, onFPSUpda
       window.removeEventListener('resize', handleResize);
       clearTimeout(resizeTimeout);
     };
-  }, [settings.isPaused, settings.speed, draw, onFPSUpdate]); // settings.glitchEffect and settings.matrixColor are deps of draw
+  }, [settings.isPaused, settings.speed, draw, onFPSUpdate, isProcessing]); // --- FIX: Add isProcessing ---
 
   return <canvas ref={canvasRef} id="matrix-canvas" aria-hidden="true" className="fixed top-0 left-0 w-full h-full z-0"></canvas>;
 };

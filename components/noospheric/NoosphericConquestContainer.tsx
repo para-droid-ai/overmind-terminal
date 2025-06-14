@@ -38,6 +38,7 @@ interface NoosphericConquestContainerProps {
 
 const DEFAULT_MAX_TURNS = 40;
 const AI_DECISION_DELAY_MS = 500;
+const PHASE_ADVANCE_DELAY_MS = 250; // Delay for automatic phase transitions
 const AI_RESPONSE_TIMEOUT_MS = 60000; // 60 seconds for AI response
 
 const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = ({
@@ -65,10 +66,15 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     isGreatWarMode: propInitialGameState?.isGreatWarMode ?? false,
     isFogOfWarActive: propInitialGameState?.isFogOfWarActive ?? false,
   });
-  const actionIsScheduledRef = useRef(false);
-
+  
   const [showGemQAnalysisHistory, setShowGemQAnalysisHistory] = useState(false);
   const [showAxiomAnalysisHistory, setShowAxiomAnalysisHistory] = useState(false);
+
+  // --- New Refs for RAF Loop ---
+  const gameLoopIdRef = useRef<number>(0);
+  const lastTickTimestampRef = useRef<number>(Date.now());
+  const timeSinceLastActionRef = useRef<number>(0);
+  // --- End New Refs ---
 
 
   const isNodeConnectedToCN = useCallback((nodeId: string, ownerId: NoosphericPlayerId, currentMapNodes: Record<string, NoosphericNodeData>): boolean => {
@@ -214,7 +220,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
   const isOverallAiReady = isAiReadyForNoosphericFromApp && !!ai1Chat && !!ai2Chat && !apiKeyMissing;
 
   const addSystemLog = useCallback((message: string, type: SystemLogEntry['type'], source?: NoosphericPlayerId, explicitTurn?: number, explicitPhase?: NoosphericPhase) => {
-    // Only log specific high-value types to console for brevity. UI log remains full.
     if (type === 'ERROR' || type === 'EVENT' || (type === 'AI_ACTION' && (message.includes("surrenders") || message.includes("activated Fabrication Hub") || message.includes("evolved") || message.includes("captured neutral")) )) { 
         console.log(`[NC Log] (${type}) ${source ? source + ': ' : ''}${message} (T:${explicitTurn !== undefined ? explicitTurn : gameStateRef.current.turn}, P:${explicitPhase !== undefined ? explicitPhase : gameStateRef.current.currentPhase})`);
     }
@@ -228,7 +233,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         message,
         type,
         source
-      }].slice(-100) // Keep UI log at reasonable size
+      }].slice(-100) 
     }));
   }, []);
 
@@ -354,7 +359,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     setSelectedNodeId(null);
     setLatestBattleReportForModal(null);
 
-    // Reset all timer values and refs
     gameStartTimestampRef.current = Date.now();
     phaseStartTimestampRef.current = Date.now();
     currentTurnStartTimestampRef.current = Date.now();
@@ -400,7 +404,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     setCurrentPhaseTimeMs(0);
     setAverageFullTurnTimeDisplay(formatDuration(0));
     setLastAiProcessingTimeDisplay(formatDuration(0));
-    setCurrentPhaseTimeDisplay(formatDuration(0)); // Reset main display
+    setCurrentPhaseTimeDisplay(formatDuration(0)); 
     setTotalGameTimeDisplay(formatDuration(0));
     
     addSystemLog(`New game setup initiated. Select map and options. FoW: ${activeModifiers.isFogOfWarActive ? 'ON' : 'OFF'}, Great War: ${activeModifiers.isGreatWarMode ? 'ON' : 'OFF'}`, "INFO");
@@ -411,7 +415,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     const newPauseState = !gameStateRef.current.isPaused;
     addSystemLog(newPauseState ? "Simulation Paused." : "Simulation Resumed.", "INFO");
 
-    if (newPauseState) { // Going to Paused state
+    if (newPauseState) { 
         const now = Date.now();
         if (gameStartTimestampRef.current) {
             elapsedGameTimeBeforePauseRef.current += (now - gameStartTimestampRef.current);
@@ -419,18 +423,18 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
         if (phaseStartTimestampRef.current) {
             elapsedPhaseTimeBeforePauseRef.current += (now - phaseStartTimestampRef.current);
         }
-        if (aiTurnStartTimeRef.current) { // If an AI was processing
+        if (aiTurnStartTimeRef.current) { 
             elapsedIndividualAiTurnTimeBeforePauseRef.current += (now - aiTurnStartTimeRef.current);
         }
         gameStartTimestampRef.current = null;
         phaseStartTimestampRef.current = null;
         aiTurnStartTimeRef.current = null;
-    } else { // Resuming from Paused state
+    } else { 
         if (isGameStarted && gameStateRef.current.currentPhase !== 'GAME_OVER' && !gameStateRef.current.winner) {
             const now = Date.now();
             gameStartTimestampRef.current = now;
-            phaseStartTimestampRef.current = now; // Phase timer also resumes
-            if (isLoadingAI) { // If an AI was processing when paused, resume its timer
+            phaseStartTimestampRef.current = now; 
+            if (isLoadingAI) { 
                  aiTurnStartTimeRef.current = now;
             }
         }
@@ -744,7 +748,6 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
 
   const advancePhase = useCallback(() => {
     if (gameStateRef.current.isPaused) {
-        // console.log("[NC advancePhase] Game is paused, skipping phase advance."); // Reduced verbosity
         return;
     }
     setGameState(prev => {
@@ -756,10 +759,9 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
       let nextActivePlayer = prev.activePlayer;
       let updatedState = { ...prev, mapNodes: { ...prev.mapNodes}, factions: {...prev.factions, 'GEM-Q': {...prev.factions['GEM-Q']}, 'AXIOM': {...prev.factions['AXIOM']}} };
 
-      // Reset phase timer for the new phase
       phaseStartTimestampRef.current = Date.now();
       elapsedPhaseTimeBeforePauseRef.current = 0;
-      setCurrentPhaseTimeMs(0); // Update display state
+      setCurrentPhaseTimeMs(0); 
 
       switch (prev.currentPhase) {
         case 'FLUCTUATION':
@@ -805,7 +807,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                     allFullTurnDurationsMsRef.current.push(fullTurnDuration);
                     completedFullTurnsRef.current += 1;
                 }
-                currentTurnStartTimestampRef.current = Date.now(); // Start timing for the new turn
+                currentTurnStartTimestampRef.current = Date.now(); 
 
                 (['GEM-Q', 'AXIOM'] as NoosphericPlayerId[]).forEach(playerId => {
                     updatedState.factions[playerId].totalUnits = 0;
@@ -938,23 +940,18 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
     let currentPlayerId = activePlayerSnapshot; 
 
     if (apiKeyMissing || gameIsOverRef.current || !isOverallAiReady || currentPhaseSnapshot === 'GAME_OVER') {
-        // addSystemLog(`AI move skipped. Conditions: apiKeyMissing:${apiKeyMissing}, gameIsOver:${gameIsOverRef.current}, isOverallAiReady:${isOverallAiReady}, phase:${currentPhaseSnapshot}`, 'INFO', currentPlayerId);
-        actionIsScheduledRef.current = false; 
         advancePhase(); 
         return;
     }
     if (currentPhaseSnapshot !== 'MANEUVER' && currentPhaseSnapshot !== 'COMBAT') {
         setIsLoadingAI(null);
-        actionIsScheduledRef.current = false; 
         advancePhase(); 
         return;
     }
-    // addSystemLog(`[DEBUG] makeAIMove called for ${currentPlayerId}, phase ${currentPhaseSnapshot}. Timestamp: ${Date.now()}`, 'INFO');
     const currentAiChat = currentPlayerId === 'GEM-Q' ? ai1Chat : ai2Chat;
     if (!currentAiChat) {
         addSystemLog(`${currentPlayerId} AI chat not available. Game cannot proceed.`, 'ERROR', currentPlayerId);
         setIsLoadingAI(null);
-        actionIsScheduledRef.current = false; 
         advancePhase(); 
         return;
     }
@@ -1109,79 +1106,66 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
 
         setIsLoadingAI(null);
         if (!gameIsOverRef.current && !gameStateRef.current.isPaused && !isEmergencyStopActive) {
-            actionIsScheduledRef.current = false; 
             advancePhase();
-        } else {
-             actionIsScheduledRef.current = false; 
         }
     }
   }, [apiKeyMissing, isOverallAiReady, ai1Chat, ai2Chat, addSystemLog, processAIResponse, advancePhase, isNodeConnectedToCN, isEmergencyStopActive, formatDuration]);
 
+
+  // --- FINAL, ROBUST requestAnimationFrame-based GAME LOOP ---
   useEffect(() => {
-      const canProceed = isGameStarted && isOverallAiReady && !gameState.isPaused && gameState.currentPhase !== 'GAME_OVER' && !isEmergencyStopActive;
-      if (!canProceed) {
-          if (actionIsScheduledRef.current) {
-            // addSystemLog(`[DEBUG] canProceed became false, resetting actionIsScheduledRef. Was: ${actionIsScheduledRef.current}`, 'INFO'); // Removed for brevity
-            actionIsScheduledRef.current = false;
-          }
-          return;
-      }
+    // This hook establishes a resilient game loop using requestAnimationFrame,
+    // which is more robust against browser throttling than setTimeout.
+    
+    const gameLoop = () => {
+        // Immediately schedule the next frame to create a continuous loop
+        gameLoopIdRef.current = requestAnimationFrame(gameLoop);
 
-      const currentPhase = gameState.currentPhase;
-      if (currentPhase === 'FLUCTUATION' || currentPhase === 'RESOURCE') {
-          if (actionIsScheduledRef.current) { 
-             // addSystemLog(`[DEBUG] Skipping ${currentPhase} advance, action already scheduled.`, 'INFO'); // Removed for brevity
-             return;
-          }
-          // addSystemLog(`[DEBUG] useEffect triggering advancePhase from ${currentPhase}. Timestamp: ${Date.now()}`, 'INFO'); // Removed for brevity
-          actionIsScheduledRef.current = true; 
-          advancePhase();
-           setTimeout(() => { 
-             if (actionIsScheduledRef.current && (gameStateRef.current.currentPhase === 'FLUCTUATION' || gameStateRef.current.currentPhase === 'RESOURCE')) {
-                actionIsScheduledRef.current = false;
-             }
-           }, 0);
-
-      } else if (currentPhase === 'MANEUVER' || currentPhase === 'COMBAT') {
-          if (actionIsScheduledRef.current) {
-            // addSystemLog(`[DEBUG] useEffect for ${currentPhase} (Player: ${gameState.activePlayer}) bailing: actionIsScheduledRef is true. isLoadingAI: ${isLoadingAI}`, 'INFO'); // Removed for brevity
+        // Pre-condition checks: If we shouldn't proceed, just exit this frame's logic.
+        const canProceed = isGameStarted && isOverallAiReady && !gameStateRef.current.isPaused && !isLoadingAI && !gameIsOverRef.current && !isEmergencyStopActive;
+        if (!canProceed) {
+            // Reset the timer when the loop is effectively paused to avoid a large jump when it resumes.
+            lastTickTimestampRef.current = Date.now();
+            timeSinceLastActionRef.current = 0;
             return;
-          }
+        }
 
-          actionIsScheduledRef.current = true;
-          // addSystemLog(`[DEBUG] useEffect scheduling makeAIMove for ${gameState.activePlayer} in ${currentPhase}. Timestamp: ${Date.now()}. actionIsScheduledRef set to true.`, 'INFO'); // Removed for brevity
-          
-          const timeoutId = setTimeout(async () => {
-              if (!isMountedRef.current || gameStateRef.current.isPaused || gameStateRef.current.currentPhase === 'GAME_OVER' || isEmergencyStopActive) {
-                  if(actionIsScheduledRef.current) { 
-                      actionIsScheduledRef.current = false;
-                      // addSystemLog(`[DEBUG] makeAIMove from timeout bailing early. Player: ${gameStateRef.current.activePlayer}, Phase: ${gameStateRef.current.currentPhase}. actionIsScheduledRef reset.`, 'INFO'); // Removed for brevity
-                  }
-                  return;
-              }
-              await makeAIMove(); 
-          }, AI_DECISION_DELAY_MS);
-          
-          return () => { 
-              clearTimeout(timeoutId);
-              if (actionIsScheduledRef.current) {
-                actionIsScheduledRef.current = false;
-                // addSystemLog(`[DEBUG] Cleared pending AI move for ${gameStateRef.current.activePlayer} in ${gameStateRef.current.currentPhase} due to useEffect re-run. actionIsScheduledRef reset. Timestamp: ${Date.now()}`, 'INFO'); // Removed for brevity
-              }
-          };
-      }
-  }, [
-    isGameStarted, 
-    gameState.currentPhase, 
-    gameState.activePlayer, 
-    gameState.turn, 
-    gameState.isPaused, 
-    isOverallAiReady, 
-    isEmergencyStopActive, 
-    advancePhase, 
-    makeAIMove, 
-    addSystemLog
-  ]);
+        const now = Date.now();
+        const deltaTime = now - lastTickTimestampRef.current;
+        lastTickTimestampRef.current = now;
+        timeSinceLastActionRef.current += deltaTime;
+
+        const currentPhase = gameStateRef.current.currentPhase;
+        
+        // Determine the action delay for the current phase
+        const actionDelay = (currentPhase === 'MANEUVER' || currentPhase === 'COMBAT') 
+            ? AI_DECISION_DELAY_MS 
+            : PHASE_ADVANCE_DELAY_MS;
+
+        // Check if enough time has passed to perform the next action
+        if (timeSinceLastActionRef.current >= actionDelay) {
+            timeSinceLastActionRef.current = 0; // Reset the timer
+
+            if (currentPhase === 'FLUCTUATION' || currentPhase === 'RESOURCE') {
+                // For automatic phases, advance the state immediately.
+                advancePhase();
+            } else if (currentPhase === 'MANEUVER' || currentPhase === 'COMBAT') {
+                // For AI-driven phases, call the makeAIMove function.
+                // This will set isLoadingAI = true, which will pause this loop on the next frame.
+                makeAIMove();
+            }
+        }
+    };
+
+    // Start the loop.
+    gameLoopIdRef.current = requestAnimationFrame(gameLoop);
+
+    // Cleanup function: This is crucial to stop the loop when the component unmounts.
+    return () => {
+        cancelAnimationFrame(gameLoopIdRef.current);
+    };
+
+  }, [isGameStarted, isOverallAiReady, gameState.isPaused, isLoadingAI, advancePhase, makeAIMove, isEmergencyStopActive]);
 
 
   useEffect(() => {
@@ -1332,7 +1316,7 @@ const NoosphericConquestContainer: React.FC<NoosphericConquestContainerProps> = 
                 </svg>
             ) : lyriaPlaybackState === 'playing' ? (
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-[var(--color-text-button-primary)]">
-                  <path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0-.75-.75h-1.5Z" />
+                  <path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z" />
                 </svg>
             ) : (
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-[var(--color-text-button-primary)]"><path d="M6.3 2.841A1.5 1.5 0 0 0 4 4.11V15.89a1.5 1.5 0 0 0 2.3 1.269l9.344-5.89a1.5 1.5 0 0 0 0-2.538L6.3 2.84Z" /></svg>

@@ -30,14 +30,14 @@ interface TerminalWindowProps {
   isAppAiProcessing?: boolean;
   appProcessingAiName?: string | null;
   isAwaitingChimeraContinuation?: boolean;
-  storyWeaverHeaderContent?: React.ReactNode; // Added prop
+  storyWeaverHeaderContent?: React.ReactNode;
 }
 
 const TerminalWindow: React.FC<TerminalWindowProps> = ({ 
   title, 
   messages, 
   className = "",
-  isTypingActive = false, // This prop indicates if the typing animation should be active for activeTypingMessageId
+  isTypingActive = false,
   activeTypingMessageId = null,
   onTypingComplete,
   isPromptingUser = false,
@@ -57,10 +57,10 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
   currentMode,
   commandHistory,
   onCommandHistoryNavigation,
-  isAppAiProcessing,      // New: Global AI processing state
-  appProcessingAiName,    // New: Name of AI globally processing
-  isAwaitingChimeraContinuation, // Specific for Chimera mode
-  storyWeaverHeaderContent // Destructured prop
+  isAppAiProcessing,
+  appProcessingAiName,
+  isAwaitingChimeraContinuation,
+  storyWeaverHeaderContent
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const regularInputRef = useRef<HTMLInputElement>(null); 
@@ -71,12 +71,18 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
   const currentTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const lastProcessedMessageCount = useRef(0);
+  
+  const isMountedRef = useRef(true);
+  const typingTargetMessageIdRef = useRef<string | null>(null);
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     setDisplayedMessages(prevDisplayed => {
       const existingMap = new Map(prevDisplayed.map(m => [m.id, m]));
-      
       const newDisplayed = messages.map(appMsg => {
         const existing = existingMap.get(appMsg.id);
         if (existing) {
@@ -85,12 +91,13 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
           }
           return existing; 
         }
-        return { ...appMsg, text: "" };
+        // New message, initialize with empty text to be typed out or fully displayed later
+        return { ...appMsg, text: (isTypingActive && appMsg.id === activeTypingMessageId) ? "" : appMsg.text };
       });
+      // Ensure only messages present in the source `messages` prop are kept
       return newDisplayed.filter(ndm => messages.some(am => am.id === ndm.id));
     });
-  }, [messages]); 
-
+  }, [messages]); // Re-sync displayedMessages when source `messages` prop changes
 
   useEffect(() => {
     if (currentTypingTimeoutRef.current) {
@@ -98,77 +105,102 @@ const TerminalWindow: React.FC<TerminalWindowProps> = ({
       currentTypingTimeoutRef.current = null;
     }
 
-    if (isTypingActive && activeTypingMessageId) {
-      const messageToType = messages.find(msg => msg.id === activeTypingMessageId);
-      const currentDisplayedMessage = displayedMessages.find(dm => dm.id === activeTypingMessageId);
+    const messageIdCurrentlyBeingTargetedByThisEffect = activeTypingMessageId;
+    typingTargetMessageIdRef.current = messageIdCurrentlyBeingTargetedByThisEffect;
+
+    if (isTypingActive && messageIdCurrentlyBeingTargetedByThisEffect) {
+      const messageToType = messages.find(msg => msg.id === messageIdCurrentlyBeingTargetedByThisEffect);
+      const currentDisplayedMessage = displayedMessages.find(dm => dm.id === messageIdCurrentlyBeingTargetedByThisEffect);
 
       if (messageToType && currentDisplayedMessage && !fullyTypedMessages.has(messageToType.id)) {
-        let charIndex = currentDisplayedMessage.text.length || 0;
-        
-        const typeChar = () => {
+        let charIndex = currentDisplayedMessage.text.length;
+
+        const typeCharRecursive = () => {
+          if (!isMountedRef.current || typingTargetMessageIdRef.current !== messageToType.id || !isTypingActive) {
+            return;
+          }
+
           if (charIndex < messageToType.text.length) {
-            setDisplayedMessages(prev => 
-              prev.map(m => 
+            setDisplayedMessages(prev =>
+              prev.map(m =>
                 m.id === messageToType.id ? { ...m, text: messageToType.text.substring(0, charIndex + 1) } : m
               )
             );
             charIndex++;
-            currentTypingTimeoutRef.current = setTimeout(typeChar, typingSpeed);
+            currentTypingTimeoutRef.current = setTimeout(typeCharRecursive, typingSpeed);
           } else {
-            setFullyTypedMessages(prev => new Set(prev).add(messageToType.id));
-            if (onTypingComplete) { 
-              onTypingComplete(messageToType.id);
+            if (isMountedRef.current && !fullyTypedMessages.has(messageToType.id)) {
+              setFullyTypedMessages(prev => new Set(prev).add(messageToType.id));
+              if (onTypingComplete) {
+                onTypingComplete(messageToType.id);
+              }
             }
           }
         };
 
         if (currentDisplayedMessage.text.length < messageToType.text.length) {
-           currentTypingTimeoutRef.current = setTimeout(typeChar, typingSpeed);
-        } else if (!fullyTypedMessages.has(messageToType.id)) { 
+          currentTypingTimeoutRef.current = setTimeout(typeCharRecursive, typingSpeed);
+        } else if (!fullyTypedMessages.has(messageToType.id)) {
+          if (isMountedRef.current) {
             setFullyTypedMessages(prev => new Set(prev).add(messageToType.id));
             if (onTypingComplete) {
               onTypingComplete(messageToType.id);
             }
+          }
         }
       }
-    } else if (!isTypingActive) {
-      let displayNeedsUpdate = false;
-      const newFullyTyped = new Set(fullyTypedMessages);
+    } else {
+      // Not actively typing a specific message OR activeTypingMessageId is null
+      // Ensure all messages are fully displayed and marked as typed.
+      const newFullyTypedSet = new Set(fullyTypedMessages);
+      let fullyTypedChanged = false;
+      
+      const newDisplayed = displayedMessages.map(dispMsg => {
+        const sourceMsg = messages.find(m => m.id === dispMsg.id);
+        let updatedText = dispMsg.text;
 
-      const updatedDisplayedMessages = displayedMessages.map(dispMsg => {
-        const correspondingAppMsg = messages.find(m => m.id === dispMsg.id);
-        if (correspondingAppMsg) {
-          if (dispMsg.id !== activeTypingMessageId && dispMsg.text !== correspondingAppMsg.text) {
-            displayNeedsUpdate = true;
-            newFullyTyped.add(correspondingAppMsg.id);
-            return { ...dispMsg, text: correspondingAppMsg.text };
-          }
-          if (dispMsg.text !== correspondingAppMsg.text && !fullyTypedMessages.has(correspondingAppMsg.id)) {
-             displayNeedsUpdate = true;
-             newFullyTyped.add(correspondingAppMsg.id);
-             return { ...dispMsg, text: correspondingAppMsg.text };
-          }
-          if (dispMsg.text === correspondingAppMsg.text && !newFullyTyped.has(correspondingAppMsg.id)) {
-            newFullyTyped.add(correspondingAppMsg.id);
-          }
+        if (sourceMsg && sourceMsg.text !== dispMsg.text) {
+          updatedText = sourceMsg.text; // Sync text
         }
-        return dispMsg;
+        if (sourceMsg && !newFullyTypedSet.has(sourceMsg.id)) {
+           newFullyTypedSet.add(sourceMsg.id);
+           fullyTypedChanged = true;
+        }
+        return sourceMsg ? { ...dispMsg, text: updatedText } : dispMsg; // ensure we return a valid message if sourceMsg not found (should not happen if synced from messages prop)
       });
-
-      if (displayNeedsUpdate) {
-        setDisplayedMessages(updatedDisplayedMessages);
+      
+      // Avoid unnecessary state updates if nothing actually changed
+      if (JSON.stringify(newDisplayed) !== JSON.stringify(displayedMessages)) {
+          if (isMountedRef.current) setDisplayedMessages(newDisplayed);
       }
-      if (newFullyTyped.size !== fullyTypedMessages.size) {
-        setFullyTypedMessages(newFullyTyped);
+      if (fullyTypedChanged) {
+        if (isMountedRef.current) setFullyTypedMessages(newFullyTypedSet);
       }
     }
-    
+
     return () => {
       if (currentTypingTimeoutRef.current) {
         clearTimeout(currentTypingTimeoutRef.current);
+        currentTypingTimeoutRef.current = null;
       }
+
+      const idThisEffectWasResponsibleFor = typingTargetMessageIdRef.current;
+      if (idThisEffectWasResponsibleFor && !fullyTypedMessages.has(idThisEffectWasResponsibleFor) && onTypingComplete) {
+        if (isMountedRef.current) {
+          const originalMessage = messages.find(m => m.id === idThisEffectWasResponsibleFor);
+          if (originalMessage) {
+            setDisplayedMessages(prev =>
+              prev.map(m => (m.id === idThisEffectWasResponsibleFor ? { ...m, text: originalMessage.text } : m))
+            );
+          }
+          setFullyTypedMessages(prev => new Set(prev).add(idThisEffectWasResponsibleFor));
+          onTypingComplete(idThisEffectWasResponsibleFor);
+        }
+      }
+      typingTargetMessageIdRef.current = null;
     };
   }, [messages, isTypingActive, activeTypingMessageId, displayedMessages, fullyTypedMessages, onTypingComplete, typingSpeed]);
+
 
   useEffect(() => {
     const contentElement = contentRef.current;
